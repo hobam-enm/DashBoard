@@ -4,24 +4,61 @@ import streamlit as st
 # ===== 페이지 기본 설정 =====
 st.set_page_config(page_title="Dashboard Test", layout="wide")
 
-# ===== 사이드 네비게이터 =====
+# ===== CSS 커스터마이징 (Databloo 느낌 네비게이터) =====
+st.markdown("""
+    <style>
+    section[data-testid="stSidebar"] {
+        background-color: #0d1b2a;
+        padding-top: 20px;
+    }
+    .sidebar-logo {
+        font-size: 20px;
+        font-weight: bold;
+        color: white;
+        text-align: center;
+        margin-bottom: 30px;
+    }
+    .nav-item {
+        display: block;
+        padding: 12px 20px;
+        color: #ffffffcc;
+        text-decoration: none;
+        font-weight: 500;
+        border-radius: 8px;
+        margin: 5px 15px;
+    }
+    .nav-item:hover {
+        background-color: #1b263b;
+        color: #ffffff;
+    }
+    .active {
+        background-color: #415a77;
+        color: #fff !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# ===== 사이드바 HTML =====
 with st.sidebar:
-    st.image("https://via.placeholder.com/150x50?text=LOGO", use_column_width=True)
-    st.title("Navigation")
-    st.markdown("### Pages")
-    st.button("Overview")
-    st.button("Funnel")
-    st.button("Customers")
-    st.button("Products")
+    st.markdown('<div class="sidebar-logo">📊 DashBoard</div>', unsafe_allow_html=True)
+    st.markdown('<a class="nav-item active" href="#">Overview</a>', unsafe_allow_html=True)
+    st.markdown('<a class="nav-item" href="#">Funnel</a>', unsafe_allow_html=True)
+    st.markdown('<a class="nav-item" href="#">Customers</a>', unsafe_allow_html=True)
+    st.markdown('<a class="nav-item" href="#">Products</a>', unsafe_allow_html=True)
 
 # ===== 데이터 불러오기 =====
 SHEET_ID = "1fKVPXGN-R2bsrv018dz8zTmg431ZSBHx1PCTnMpdoWY"
-GID = "407131354"
+GID = "407131354"  # RAW_원본 시트
 CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
 
 @st.cache_data(ttl=600)
 def load_data(url):
     df = pd.read_csv(url)
+    # 안전하게 타입 변환
+    if "value" in df.columns:
+        df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    if "주차시작일" in df.columns:
+        df["주차시작일"] = pd.to_datetime(df["주차시작일"], errors="coerce")
     return df
 
 df = load_data(CSV_URL)
@@ -39,9 +76,17 @@ with col3:
 with col4:
     demo_sel = st.multiselect("데모", sorted(df["데모"].dropna().unique().tolist()))
 with col5:
-    week_range = st.slider("주차 범위", int(df["주차"].min()), int(df["주차"].max()), (int(df["주차"].min()), int(df["주차"].max())))
+    # 주차시작일 슬라이더
+    min_date, max_date = df["주차시작일"].min(), df["주차시작일"].max()
+    week_range = st.slider(
+        "주차 범위",
+        min_value=min_date,
+        max_value=max_date,
+        value=(min_date, max_date),
+        format="YYYY-MM-DD"
+    )
 
-# 필터 적용
+# ===== 필터 적용 =====
 f = df.copy()
 if ip_sel:
     f = f[f["IP"].isin(ip_sel)]
@@ -51,20 +96,19 @@ if media_sel:
     f = f[f["매체"].isin(media_sel)]
 if demo_sel:
     f = f[f["데모"].isin(demo_sel)]
-f = f[(f["주차"] >= week_range[0]) & (f["주차"] <= week_range[1])]
+f = f[(f["주차시작일"] >= week_range[0]) & (f["주차시작일"] <= week_range[1])]
 
 # ===== 오버뷰 KPI (T시청률 평균) =====
 st.markdown("## 📊 Overview")
 
-overview_area = st.container()
-with overview_area:
-    st.subheader("IP별 평균 T시청률")
-    kpi_df = f[f["metric"] == "T시청률"].groupby("IP", as_index=False)["value"].mean()
-    if kpi_df.empty:
-        st.info("조건에 맞는 데이터가 없습니다.")
-    else:
-        st.dataframe(kpi_df, use_container_width=True)
+st.subheader("IP별 평균 T시청률")
+kpi_df = f[f["metric"] == "T시청률"].groupby("IP", as_index=False)["value"].mean()
 
-# ===== 이후 확장 공간 (비워둠) =====
+if kpi_df.empty:
+    st.info("조건에 맞는 데이터가 없습니다.")
+else:
+    st.dataframe(kpi_df, use_container_width=True)
+
+# ===== 이후 확장 공간 =====
 st.divider()
 st.markdown("### ⬜ More KPIs and Charts (Reserved)")
