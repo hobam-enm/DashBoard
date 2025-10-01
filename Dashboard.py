@@ -4,35 +4,36 @@ import streamlit as st
 # ===== 페이지 기본 설정 =====
 st.set_page_config(page_title="Dashboard Test", layout="wide")
 
-# ===== CSS 커스터마이징 (Databloo 느낌 네비게이터) =====
+# ===== CSS 커스터마이징 (연한 회색 배경 네비게이터) =====
 st.markdown("""
     <style>
     section[data-testid="stSidebar"] {
-        background-color: #0d1b2a;
+        background-color: #f5f5f5;
         padding-top: 20px;
     }
     .sidebar-logo {
         font-size: 20px;
         font-weight: bold;
-        color: white;
+        color: #333;
         text-align: center;
-        margin-bottom: 30px;
+        margin-bottom: 20px;
     }
     .nav-item {
         display: block;
-        padding: 12px 20px;
-        color: #ffffffcc;
+        width: 100%;
+        padding: 10px 15px;
+        color: #444;
         text-decoration: none;
         font-weight: 500;
-        border-radius: 8px;
-        margin: 5px 15px;
+        border-radius: 6px;
+        margin: 3px 0px; /* 버튼 간격 좁게 */
     }
     .nav-item:hover {
-        background-color: #1b263b;
-        color: #ffffff;
+        background-color: #e0e0e0;
+        color: #000;
     }
     .active {
-        background-color: #415a77;
+        background-color: #4a6cf7; /* 강조색 */
         color: #fff !important;
     }
     </style>
@@ -54,7 +55,6 @@ CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&
 @st.cache_data(ttl=600)
 def load_data(url):
     df = pd.read_csv(url)
-    # 안전하게 타입 변환
     if "value" in df.columns:
         df["value"] = pd.to_numeric(df["value"], errors="coerce")
     if "주차시작일" in df.columns:
@@ -63,7 +63,7 @@ def load_data(url):
 
 df = load_data(CSV_URL)
 
-# ===== 상단 필터 영역 =====
+# ===== 상단 필터 =====
 st.markdown("### 🔍 Filters")
 
 col1, col2, col3, col4, col5 = st.columns(5)
@@ -76,14 +76,13 @@ with col3:
 with col4:
     demo_sel = st.multiselect("데모", sorted(df["데모"].dropna().unique().tolist()))
 with col5:
-    # 주차시작일 슬라이더
     min_date, max_date = df["주차시작일"].min(), df["주차시작일"].max()
     week_range = st.slider(
         "주차 범위",
         min_value=min_date,
         max_value=max_date,
         value=(min_date, max_date),
-        format="YYYY-MM-DD"
+        format="YYYY.MM.DD"
     )
 
 # ===== 필터 적용 =====
@@ -109,6 +108,6 @@ if kpi_df.empty:
 else:
     st.dataframe(kpi_df, use_container_width=True)
 
-# ===== 이후 확장 공간 =====
+# ===== 확장 공간 =====
 st.divider()
 st.markdown("### ⬜ More KPIs and Charts (Reserved)")
