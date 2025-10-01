@@ -76,7 +76,15 @@ with col3:
 with col4:
     demo_sel = st.multiselect("데모", sorted(df["데모"].dropna().unique().tolist()))
 with col5:
-    min_date, max_date = df["주차시작일"].min(), df["주차시작일"].max()
+    # 주차시작일 슬라이더 (NaT 제거 후 datetime 보장)
+    valid_dates = df["주차시작일"].dropna() if "주차시작일" in df.columns else pd.Series([], dtype="datetime64[ns]")
+    if not valid_dates.empty:
+        min_date = pd.to_datetime(valid_dates.min())
+        max_date = pd.to_datetime(valid_dates.max())
+    else:
+        # fallback: 오늘 날짜라도 지정
+        min_date = max_date = pd.Timestamp.today()
+
     week_range = st.slider(
         "주차 범위",
         min_value=min_date,
