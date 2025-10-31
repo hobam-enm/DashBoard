@@ -1,12 +1,4 @@
 # 📊 Overview / IP 성과 대시보드 — v2.0 
-# ------------------------------------------------------------------
-# Streamlit Cloud setup:
-#   In your app's Secrets, add at least:
-#     SHEET_ID = "<your Google Sheet ID>"
-#     GID      = "407131354"   # or your tab gid
-#   (Optionally) CSV_URL = "https://...export?format=csv&gid=..." to override.
-# This file was auto-adapted for cloud deployment.
-# ------------------------------------------------------------------
 
 
 #region [ 1. 라이브러리 임포트 ]
@@ -19,130 +11,409 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 from plotly import graph_objects as go
-import plotly.io as pio  # ◀◀◀ [수정] 차트 테마 적용을 위해 추가
+import plotly.io as pio
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
+
+# ◀◀◀ [신규] Streamlit Cloud 인증을 위한 라이브러리
+import gspread
+from google.oauth2.service_account import Credentials
 #endregion
 
 #region [ 2. 기본 설정 및 공통 상수 ]
 # =====================================================
+# ◀◀◀ [수정] 페이지 설정 원본 유지
 st.set_page_config(page_title="Overview Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-# ===== 구글 시트 URL (시크릿 → 안전 조합) =====
-SHEET_ID = str(st.secrets.get("SHEET_ID", "1fKVPXGN-R2bsrv018dz8zTmg431ZSBHx1PCTnMpdoWY")).strip()
-GID      = str(st.secrets.get("GID", "407131354")).strip()  # RAW_원본
 
-# URL을 항상 ASCII로 정규화해서 생성
-from urllib.parse import urlsplit, urlunsplit, quote, urlencode
+# ===== 네비게이션 아이템 정의 (v2.0) =====
+NAV_ITEMS = {
+    "Overview": "📊 Overview",
+    "IP 성과": "📈 IP 성과 자세히보기",
+    "데모그래픽": "👥 IP 오디언스 히트맵",
+    "비교분석": "⚖️ IP간 비교분석",
+    "성장스코어-방영지표": "🚀 성장스코어-방영지표",
+    "성장스코어-디지털": "🛰️ 성장스코어-디지털",
+    "회차별": "🎬 회차별 비교",
+}
 
-_base  = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export"
-_path  = urlsplit(_base).path                     # /spreadsheets/d/<id>/export
-_path  = quote(_path, safe="/")                   # path 내 비ASCII 방지
-_query = urlencode({"format": "csv", "gid": str(GID)}, doseq=True)
-CSV_URL = urlunsplit(("https", "docs.google.com", _path, _query, "")).strip()
+# ===== 데모 컬럼 순서 (페이지 2, 3에서 공통 사용) =====
+DECADES = ["10대","20대","30대","40대","50대","60대"]
+DEMO_COLS_ORDER = [f"{d}남성" for d in DECADES] + [f"{d}여성" for d in DECADES]
 
-# 네비게이션 페이지 목록(유효성 체크용)
-NAV_PAGES = ["Overview", "IP 성과", "데모그래픽", "비교분석", "회차별"]
-
-# 선택: 디버그 표시 (필요 시 True)
-DEBUG_SHOW_URL = bool(st.secrets.get("DEBUG_SHOW_URL", False))
-if DEBUG_SHOW_URL:
-    st.caption(f"CSV_URL = {CSV_URL}")
+# ===== ◀◀◀ [신규] Plotly 공통 테마 (아이디어 #3) =====
+dashboard_theme = go.Layout(
+    paper_bgcolor='rgba(0,0,0,0)',  # 카드 배경과 동일하게 투명
+    plot_bgcolor='rgba(0,0,0,0)',   # 차트 내부 배경 투명
+    font=dict(family='sans-serif', size=12, color='#333333'),
+    title=dict(font=dict(size=16, color="#111"), x=0.05),
+    legend=dict(
+        orientation='h',
+        yanchor='bottom',
+        y=1.02,
+        xanchor='right',
+        x=1,
+        bgcolor='rgba(0,0,0,0)'
+    ),
+    margin=dict(l=20, r=20, t=50, b=20), # 기본 마진
+    xaxis=dict(
+        showgrid=False, 
+        zeroline=True, 
+        zerolinecolor='#e0e0e0', 
+        zerolinewidth=1
+    ),
+    yaxis=dict(
+        showgrid=True, 
+        gridcolor='#f0f0f0', # 매우 연한 그리드
+        zeroline=True, 
+        zerolinecolor='#e0e0e0'
+    ),
+    # 테마 색상 (Plotly 기본값 사용. 필요시 주석 해제)
+    # colorway=px.colors.qualitative.Plotly 
+)
+# ◀◀◀ [수정] go.Layout 객체를 go.layout.Template으로 감싸서 등록
+pio.templates['dashboard_theme'] = go.layout.Template(layout=dashboard_theme)
+pio.templates.default = 'dashboard_theme'
+# =====================================================
 #endregion
 
-#region [ 3. 공통 함수 / 로딩 ]
+#region [ 3. 공통 함수: 데이터 로드 / 유틸리티 ]
 # =====================================================
+
+# ===== ◀◀◀ [수정] 데이터 로드 (Streamlit Secrets 사용) =====
 @st.cache_data(ttl=600)
-def load_data(url: str) -> pd.DataFrame:
+def load_data() -> pd.DataFrame: # url 인수 제거
     """
-    1) URL을 ASCII로 정규화한 뒤 read_csv
-    2) 실패 시 requests.get → StringIO 폴백
-    3) 날짜/숫자/문자 기본 전처리
+    Streamlit Secrets를 사용하여 Google Sheets에서 데이터를 인증하고 로드합니다.
+    st.secrets에 'gcp_service_account', 'SHEET_ID', 'GID' (워크시트 이름)가 있어야 합니다.
     """
-    import io, numpy as np, pandas as pd, requests
-    from urllib.parse import urlsplit, urlunsplit, quote, urlencode, parse_qsl
+    
+    # ===== 1. Google Sheets 인증 =====
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    
+    # st.secrets에서 gcp_service_account 정보 로드
+    creds_info = st.secrets["gcp_service_account"]
+    creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+    client = gspread.authorize(creds)
 
-    def _safe_url(u: str) -> str:
-        parts = urlsplit(str(u).strip())
-        safe_path = quote(parts.path, safe="/")
-        q = urlencode(parse_qsl(parts.query, keep_blank_values=True), doseq=True)
-        return urlunsplit((parts.scheme or "https", parts.netloc, safe_path, q, ""))
-
-    safe = _safe_url(url)
-
-    # 시도 1: pandas 직접 로드
+    # ===== 2. 데이터 로드 =====
     try:
-        df = pd.read_csv(safe)
-    except Exception:
-        # 시도 2: requests 폴백
-        resp = requests.get(safe, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
-        resp.raise_for_status()
-        content = resp.content
-        try:
-            text = content.decode("utf-8")
-        except UnicodeDecodeError:
-            text = content.decode("utf-8-sig", errors="replace")
-        df = pd.read_csv(io.StringIO(text))
+        # st.secrets에서 시트 ID와 워크시트 이름(GID 키) 로드
+        sheet_id = st.secrets["SHEET_ID"]
+        # TOML에서 GID = "RAW"로 설정했으므로, "RAW"라는 이름의 워크시트를 엽니다.
+        worksheet_name = st.secrets["GID"] 
+        
+        spreadsheet = client.open_by_key(sheet_id)
+        worksheet = spreadsheet.worksheet(worksheet_name)
+        
+        # 데이터를 DataFrame으로 변환
+        data = worksheet.get_all_records() # 시트의 모든 데이터를 딕셔너리 리스트로 가져옴
+        df = pd.DataFrame(data)
 
+    except gspread.exceptions.WorksheetNotFound:
+        st.error(f"Streamlit Secrets의 GID 값 ('{worksheet_name}')에 해당하는 워크시트를 찾을 수 없습니다.")
+        return pd.DataFrame()
+    except KeyError as e:
+        st.error(f"Streamlit Secrets에 필요한 키({e})가 없습니다. TOML 설정을 확인하세요.")
+        return pd.DataFrame()
+    except Exception as e:
+        st.error(f"Google Sheets 데이터 로드 중 오류 발생: {e}")
+        return pd.DataFrame()
+
+    # --- 3. (이하 원본 코드의 전처리 로직 동일) ---
+    
     # --- 날짜 파싱 ---
     if "주차시작일" in df.columns:
-        df["주차시작일"] = pd.to_datetime(df["주차시작일"].astype(str).str.strip(), format="%Y. %m. %d", errors="coerce")
+        df["주차시작일"] = pd.to_datetime(
+            df["주차시작일"].astype(str).str.strip(),
+            format="%Y. %m. %d", # ◀◀◀ [참고] 원본 포맷 유지
+            errors="coerce"
+        )
     if "방영시작일" in df.columns:
-        df["방영시작일"] = pd.to_datetime(df["방영시작일"].astype(str).str.strip(), format="%Y. %m. %d", errors="coerce")
+        df["방영시작일"] = pd.to_datetime(
+            df["방영시작일"].astype(str).str.strip(),
+            format="%Y. %m. %d", # ◀◀◀ [참고] 원본 포맷 유지
+            errors="coerce"
+        )
 
-    # --- 숫자형 변환 ---
+    # --- 숫자형 데이터 변환 ---
+    # gspread.get_all_records()는 이미 1,000단위 콤마나 %를 제거하고 숫자/문자열로 가져옵니다.
+    # 하지만 만약을 위해 원본 코드의 숫자 변환 로직을 유지합니다.
     if "value" in df.columns:
-        v = (df["value"].astype(str)
-                     .str.replace(",", "", regex=False)
-                     .str.replace("%", "", regex=False))
+        # .astype(str)을 추가하여 gspread가 숫자로 가져온 경우에도 처리되도록 보장
+        v = df["value"].astype(str).str.replace(",", "", regex=False).str.replace("%", "", regex=False)
         df["value"] = pd.to_numeric(v, errors="coerce").fillna(0)
 
-    # --- 문자열 정제 ---
-    for c in ["IP","편성","지표구분","매체","데모","metric","회차","주차"]:
+    # --- 문자열 데이터 정제 ---
+    for c in ["IP", "편성", "지표구분", "매체", "데모", "metric", "회차", "주차"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
 
-    # --- 파생 컬럼 ---
+    # --- 파생 컬럼 생성 ---
     if "회차" in df.columns:
         df["회차_numeric"] = df["회차"].str.extract(r"(\d+)", expand=False).astype(float)
     else:
         df["회차_numeric"] = pd.NA
 
     return df
-#endregion
 
-
-#region [ 4. 라우팅 / 네비 유틸 ]
-# =====================================================
-def get_current_page_default(default: str = "Overview") -> str:
+# ===== 일반 포맷팅 유틸 =====
+def fmt(v, digits=3, intlike=False):
     """
-    쿼리파라미터 ?page= 에서 현재 페이지를 읽고,
-    유효하지 않으면 default를 반환.
+    숫자 포맷팅 헬퍼 (None이나 NaN은 '–'로 표시)
+    """
+    if v is None or pd.isna(v):
+        return "–"
+    return f"{v:,.0f}" if intlike else f"{v:.{digits}f}"
+
+# ===== KPI 카드 렌더링 유틸 =====
+def kpi(col, title, value):
+    """
+    Streamlit 컬럼 내에 KPI 카드를 렌더링합니다.
+    """
+    with col:
+        st.markdown(
+            f'<div class="kpi-card"><div class="kpi-title">{title}</div>'
+            f'<div class="kpi-value">{value}</div></div>',
+            unsafe_allow_html=True
+        )
+
+# ===== 페이지 라우팅 유틸 =====
+def get_current_page_default(default="Overview"):
+    """
+    URL 쿼리 파라미터(?page=...)에서 현재 페이지를 읽어옵니다.
+    없으면 default 값을 반환합니다.
     """
     try:
-        params = st.experimental_get_query_params()  # Streamlit Cloud 호환
+        qp = st.query_params  # Streamlit 신버전
+        p = qp.get("page", None)
+        if p is None:
+            return default
+        return p if isinstance(p, str) else p[0]
     except Exception:
-        params = {}
-    page = (params.get("page", [default]) or [default])[0]
-    if page not in NAV_PAGES:
-        page = default
-    return page
+        qs = st.experimental_get_query_params()  # 구버전 호환
+        return (qs.get("page", [default])[0])
 
-def set_current_page(page: str) -> None:
-    """
-    현재 페이지를 쿼리파라미터에 반영.
-    """
-    if page not in NAV_PAGES:
-        page = NAV_PAGES[0]
-    st.experimental_set_query_params(page=page)
+# ===== 회차 옵션 생성 유틸 (페이지 5) =====
+def get_episode_options(df: pd.DataFrame) -> List[str]:
+    """데이터에서 사용 가능한 회차 목록 (문자열, '00' 제외, '차'/'화' 제거)을 추출합니다."""
+    
+    valid_options = []
+    # 숫자 회차 컬럼 우선 사용
+    if "회차_numeric" in df.columns:
+        unique_episodes_num = sorted([
+            int(ep) for ep in df["회차_numeric"].dropna().unique() if ep > 0 # 0보다 큰 경우만
+        ])
+        if unique_episodes_num:
+            max_ep_num = unique_episodes_num[-1]
+            for ep_num in unique_episodes_num: valid_options.append(str(ep_num))
+            # 마지막 회차 처리
+            last_ep_str_num = str(max_ep_num)
+            if last_ep_str_num in valid_options and valid_options[-1] != last_ep_str_num:
+                 valid_options.remove(last_ep_str_num); valid_options.append(last_ep_str_num)
+            if len(valid_options) > 0 and "(마지막화)" not in valid_options[-1]:
+                 valid_options[-1] = f"{valid_options[-1]} (마지막화)"
+            return valid_options
+        else: return []
+    # 숫자 회차 컬럼 없을 경우
+    elif "회차" in df.columns:
+        raw_options = sorted(df["회차"].dropna().unique())
+        for opt in raw_options:
+            # '00'으로 시작하는 것 제외
+            if not opt.startswith("00"):
+                cleaned_opt = re.sub(r"[화차]", "", opt) # '화' 또는 '차' 제거
+                if cleaned_opt.isdigit() and int(cleaned_opt) > 0: 
+                    valid_options.append(cleaned_opt)
+        # 숫자 기준으로 정렬
+        return sorted(list(set(valid_options)), key=lambda x: int(x) if x.isdigit() else float('inf')) 
+    else: return []
+#endregion
 
-def nav_button(label: str, page: str, key: str = None):
-    """
-    간단 네비 버튼 헬퍼: 클릭 시 페이지 전환.
-    """
-    if st.button(label, key=key):
-        set_current_page(page)
-        st.rerun()
+#region [ 4. 공통 스타일 ]
+# =====================================================
+# CSS 수정: 전체적인 색상 톤, 폰트, 카드 디자인을 더 세련되게 변경
+st.markdown("""
+<style>
+/* --- 전체 앱 배경 --- */
+[data-testid="stAppViewContainer"] {
+    background-color: #f8f9fa; /* 매우 연한 회색 배경 */
+}
+/* --- ◀◀◀ [수정] st.container(border=True) 스타일 오버라이드 --- */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+    background-color: #ffffff;
+    border: 1px solid #e9e9e9;
+    border-radius: 10px;
+    box-shadow: 0 2px 5px rgba(0,0,0,0.03);
+    padding: 1.25rem 1.25rem 1.5rem 1.25rem; /* 20px 20px 25px 20px */
+    margin-bottom: 1.5rem; /* 카드 간 세로 간격 */
+}
+
+
+/* --- Sidebar 배경/패딩 + 항상 펼침(폭 고정) --- */
+section[data-testid="stSidebar"] {
+    background: #ffffff; /* 흰색 배경 */
+    border-right: 1px solid #e0e0e0; /* 연한 경계선 */
+    padding-top: 1rem;
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+    min-width:300px !important;
+    max-width:300px !important;
+}
+/* 사이드바 접힘 토글 버튼 숨김 */
+div[data-testid="collapsedControl"] { display:none !important; }
+
+/* --- 로고 --- */
+.sidebar-logo{
+    font-size: 28px; /* 크기 살짝 조정 */
+    font-weight: 700; 
+    color: #1a1a1a; /* 더 진한 검은색 */
+    text-align: center; 
+    margin-bottom: 10px;
+    padding-top: 10px;
+}
+
+/* --- 네비게이션 아이템 --- */
+.nav-item{
+    display: block;
+    width: 100%;
+    padding: 12px 15px; /* 패딩 조정 */
+    color: #333 !important; /* 기본 텍스트 색상 */
+    background: #f1f3f5; /* 연한 회색 배경 */
+    text-decoration: none !important;
+    font-weight: 600; /* 폰트 굵기 */
+    border-radius: 8px; /* 둥근 모서리 */
+    margin-bottom: 5px; /* 아이템간 간격 */
+    text-align: center;
+    transition: background-color 0.2s ease, color 0.2s ease;
+}
+.nav-item:hover{
+    background: #e9ecef; /* 호버 시 더 진한 회색 */
+    color: #000 !important;
+    text-decoration: none;
+}
+.active{
+    background: #004a99; /* 전문적인 다크 블루 */
+    color: #ffffff !important;
+    text-decoration: none;
+    font-weight: 700;
+}
+.active:hover{
+    background: #003d80; /* 호버 시 살짝 더 어둡게 */
+    color: #ffffff !important;
+}
+
+/* --- ◀◀◀ [삭제] .module-card --- */
+/* (st.container(border=True)가 대체) */
+
+
+/* --- KPI 카드 (모듈형 카드와 스타일 통일) --- */
+.kpi-card {
+  background: #ffffff; /* 깨끗한 흰색 배경 */
+  border: 1px solid #e9e9e9; /* 매우 연한 테두리 */
+  border-radius: 10px; /* 둥근 모서리 */
+  padding: 20px 15px; /* 상하 여백 증가 */
+  text-align: center;
+  box-shadow: 0 2px 5px rgba(0,0,0,0.03); /* 매우 미세한 그림자 */
+  height: 100%; /* 컬럼 내 높이 통일 */
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.kpi-title { 
+    font-size: 15px; 
+    font-weight: 600; 
+    margin-bottom: 10px; /* 값과의 간격 증가 */
+    color: #444; 
+}
+.kpi-value { 
+    font-size: 28px; /* 폰트 크기 증가 */
+    font-weight: 700; /* 폰트 굵기 감소 */
+    color: #000; /* 더 진한 검은색 */
+    line-height: 1.2;
+}
+
+/* --- [페이지 2] KPI 서브 라인 스타일 --- */
+.kpi-subwrap { 
+    margin-top: 10px; /* 간격 증가 */
+    line-height: 1.4; 
+}
+.kpi-sublabel { 
+    font-size: 12px; /* 폰트 크기 통일 */
+    font-weight: 500; /* 폰트 굵기 */
+    color: #555; 
+    letter-spacing: 0.1px; 
+    margin-right: 6px; 
+}
+.kpi-substrong { 
+    font-size: 14px; 
+    font-weight: 700; 
+    color: #111; 
+}
+.kpi-subpct { 
+    font-size: 14px; 
+    font-weight: 700; 
+}
+
+/* --- AgGrid 공통 --- */
+.ag-theme-streamlit { 
+    font-size: 13px; /* 기본 폰트 크기 살짝 키움 */
+    /* border: none !important; */ /* ◀◀◀ [삭제] 컨테이너가 테두리 관리 */
+}
+.ag-theme-streamlit .ag-root-wrapper {
+    border-radius: 8px; /* AgGrid 자체의 모서리도 둥글게 */
+}
+/* --- ◀◀◀ [유지] AgGrid 호버 (아이디어 #4) --- */
+.ag-theme-streamlit .ag-row-hover {
+    background-color: #f5f8ff !important; /* 연한 파란색 배경 */
+}
+/* AgGrid 헤더 */
+.ag-theme-streamlit .ag-header-cell-label {
+    justify-content: center !important;
+}
+.ag-theme-streamlit .centered-header .ag-header-cell-label {
+    justify-content: center !important;
+}
+.ag-theme-streamlit .centered-header .ag-sort-indicator-container {
+    margin-left: 4px;
+}
+.ag-theme-streamlit .bold-header .ag-header-cell-text { 
+    font-weight: 700 !important; 
+    font-size: 13px; /* 폰트 크기 명시 */
+    color: #111;
+}
+
+/* --- 페이지 내 섹션 타이틀 --- */
+.sec-title{ 
+    font-size: 20px; 
+    font-weight: 700; 
+    color: #111; 
+    margin: 0 0 10px 0; /* 카드 상단에 붙도록 마진 조정 */
+    padding-bottom: 0;
+    border-bottom: none; /* 밑줄 제거 */
+}
+
+/* --- Streamlit 기본 요소 미세 조정 --- */
+div[data-testid="stMultiSelect"], div[data-testid="stSelectbox"] {
+    margin-top: -10px; 
+}
+h3 { /* 메인 페이지 타이틀 */
+    margin-top: -15px;
+    margin-bottom: 10px; /* 타이틀과 카드 간 간격 */
+}
+h4 { /* 페이지 내 부제목 (예: 주요 작품 성과) */
+    font-weight: 700;
+    color: #111;
+    margin-top: 0rem; /* ◀◀◀ [수정] 컨테이너 내부 여백이 있으므로 마진 제거 */
+    margin-bottom: 0.5rem;
+}
+/* 구분선 (st.divider) */
+hr {
+    margin: 1.5rem 0; /* 상하 여백 증가 */
+    background-color: #e0e0e0;
+}
+</style>
+""", unsafe_allow_html=True)
+
 #endregion
 
 #region [ 5. 사이드바 네비게이션 ]
@@ -420,7 +691,8 @@ def get_avg_demo_pop_by_episode(df_src: pd.DataFrame, medias: List[str]) -> pd.D
 #region [ 8. 페이지 1: Overview ]
 # =====================================================
 def render_overview():
-    df = load_data(CSV_URL)
+    # ◀◀◀ [수정] load_data() 호출 방식 변경
+    df = load_data()
   
     # --- 페이지 전용 필터 (메인 영역, 제목 옆에 배치) ---   
     filter_cols = st.columns(4) # [제목 | 편성필터 | 연도필터 | 월필터]
@@ -637,7 +909,8 @@ def render_overview():
 # =====================================================
 def render_ip_detail():
 
-    df_full = load_data(CSV_URL)
+    # ◀◀◀ [수정] load_data() 호출 방식 변경
+    df_full = load_data()
 
     filter_cols = st.columns([3, 2, 2]) # [제목 | IP선택 | 그룹기준]
     
@@ -1296,7 +1569,8 @@ def render_heatmap(df_plot: pd.DataFrame, title: str):
 # ===== [페이지 3] 메인 렌더링 함수 =====
 def render_demographic():
     # --- 데이터 로드 ---
-    df_all = load_data(CSV_URL)
+    # ◀◀◀ [수정] load_data() 호출 방식 변경
+    df_all = load_data()
 
     # --- 페이지 전용 필터 (메인 영역) ---
     ip_options = sorted(df_all["IP"].dropna().unique().tolist())
@@ -1989,7 +2263,8 @@ def render_ip_vs_ip_comparison(df_all: pd.DataFrame, ip1: str, ip2: str, kpi_per
 
 # ===== [페이지 4] 메인 렌더링 함수 =====
 def render_comparison():
-    df_all = load_data(CSV_URL)
+    # ◀◀◀ [수정] load_data() 호출 방식 변경
+    df_all = load_data()
     try: 
         kpi_percentiles = get_kpi_data_for_all_ips(df_all)
     except Exception as e: 
@@ -2195,7 +2470,8 @@ def plot_episode_comparison(
 def render_episode():
     
     # --- 데이터 로드 ---
-    df_all = load_data(CSV_URL)
+    # ◀◀◀ [수정] load_data() 호출 방식 변경
+    df_all = load_data()
     
     # --- [수정] 필터 메인 영역으로 이동 ---
     filter_cols = st.columns([3, 3, 2]) # [Title | Base IP | Episode]
@@ -2332,7 +2608,8 @@ def render_growth_score():
         작품명은 줄바꿈 적용(한 줄 한 작품), 가로/세로 패딩 최소화, 세로 길이 확대
       - 전체표 정렬: 종합의 '절대등급' 우선 내림차순, 동률 시 '상승등급' 높은 순
     """
-    df_all = load_data(CSV_URL).copy()
+    # ◀◀◀ [수정] load_data() 호출 방식 변경
+    df_all = load_data().copy()
 
     # ---------- 설정 ----------
     EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
@@ -2781,8 +3058,8 @@ def render_growth_score():
       if (v.startsWith('S')) { bg='rgba(0,91,187,0.14)'; color='#003d80'; }
       else if (v.startsWith('A')) { bg='rgba(0,91,187,0.08)'; color='#004a99'; }
       else if (v.startsWith('B')) { bg='rgba(0,0,0,0.03)'; color:'#333'; fw='600'; }
-      else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color:'#2a61cc'; }
-      else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color:'#1a44a3'; }
+      else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color='#2a61cc'; }
+      else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color='#1a44a3'; }
       return {'background-color':bg,'color':color,'font-weight':fw,'text-align':'center'};
     }""")
 
@@ -2828,7 +3105,8 @@ def render_growth_score_digital():
     from plotly import graph_objects as go
     import streamlit as st
 
-    df_all = load_data(CSV_URL).copy()
+    # ◀◀◀ [수정] load_data() 호출 방식 변경
+    df_all = load_data().copy()
 
     # ---------- 설정 ----------
     EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
@@ -3217,8 +3495,8 @@ def render_growth_score_digital():
       if (v.startsWith('S')) { bg='rgba(0,91,187,0.14)'; color='#003d80'; }
       else if (v.startsWith('A')) { bg='rgba(0,91,187,0.08)'; color='#004a99'; }
       else if (v.startsWith('B')) { bg='rgba(0,0,0,0.03)'; color:'#333'; fw='600'; }
-      else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color:'#2a61cc'; }
-      else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color:'#1a44a3'; }
+      else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color='#2a61cc'; }
+      else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color='#1a44a3'; }
       return {'background-color':bg,'color':color,'font-weight':fw,'text-align':'center'};
     }""")
 
@@ -3265,3 +3543,4 @@ else:
     st.write("페이지를 찾을 수 없습니다.")
 
 #endregion
+
