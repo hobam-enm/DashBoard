@@ -1121,24 +1121,46 @@ def render_ip_detail():
         pct = (val / base_val) * 100
         return "#d93636" if pct > 100 else ("#2a61cc" if pct < 100 else "#444")
 
-    def sublines_html(prog_label: str, rank_tuple: tuple, val, base_val):
-        rnk, total = rank_tuple if rank_tuple else (None, 0)
-        rank_html = "<span class='kpi-sublabel'>그룹 內</span> <span class='kpi-substrong'>{}</span>".format((f\"{rnk}위\" if (rnk is not None and total>0) else "–위")).format(
-            prog_label.replace(" 평균", ""), (f"{rnk}위" if (rnk is not None and total>0) else "–위")
-        )
-        if val is None or pd.isna(val) or base_val in (None,0) or pd.isna(base_val):
-            pct_txt = "–"; col = "#888"
-        else:
-            pct = (val / base_val) * 100
-            pct_txt = f"{pct:.0f}%"; col = _pct_color(val, base_val)
-        pct_html = "<span class='kpi-sublabel'>그룹 평균比</span> <span class='kpi-subpct' style='color:{};'>{}</span>".format(col, pct_txt).format(
-            prog_label, col, pct_txt
-        )
-        return f"<div class='kpi-subwrap'>{rank_html}<br/>{pct_html}</div>"
+    
+def sublines_html(prog_label: str, rank_tuple: tuple, val, base_val):
+    rnk, total = rank_tuple if rank_tuple else (None, 0)
+
+    # "그룹 내 N위" 고정 문구
+    rank_label = f"{rnk}위" if (rnk is not None and total > 0) else "–위"
+    rank_html = (
+        "<span class='kpi-sublabel'>그룹 內</span> "
+        f"<span class='kpi-substrong'>{rank_label}</span>"
+    )
+
+    # "그룹 평균比 P%" 고정 문구
+    pct_txt = "–"
+    col = "#888"
+    try:
+        import pandas as pd  # ensure pd exists here too
+        if (
+            val is not None
+            and base_val not in (None, 0)
+            and not (pd.isna(val) or pd.isna(base_val))
+        ):
+            pct = (float(val) / float(base_val)) * 100.0
+            pct_txt = f"{pct:.0f}%"
+            col = _pct_color(val, base_val) if "_pct_color" in globals() else "#333"
+    except Exception:
+        pct_txt = "–"
+        col = "#888"
+
+    pct_html = (
+        "<span class='kpi-sublabel'>그룹 평균比</span> "
+        f"<span class='kpi-subpct' style='color:{col};'>{pct_txt}</span>"
+    )
+
+    return f"<div class='kpi-subwrap'>{rank_html}<br/>{pct_html}</div>"
 
     def kpi_with_rank(col, title, value, base_val, rank_tuple, prog_label, intlike=False, digits=3):
         with col:
-            main = f"{(f'{value:,.0f}' if intlike else f'{value:.{digits}f}')}" if value is not None and not pd.isna(value) else "–"
+            main = (fmt_eokman(value) if ('디지털 조회' in title or '디지털 조회수' in title) else (
+            f"{value:,.0f}" if intlike else f"{value:.{digits}f}"
+        )) if (value is not None and not pd.isna(value)) else "–"
             st.markdown(
                 f"<div class='kpi-card'>"
                 f"<div class='kpi-title'>{title}</div>"
