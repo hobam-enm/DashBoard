@@ -1,4 +1,12 @@
 # 📊 Overview / IP 성과 대시보드 — v2.0 
+# ------------------------------------------------------------------
+# Streamlit Cloud setup:
+#   In your app's Secrets, add at least:
+#     SHEET_ID = "<your Google Sheet ID>"
+#     GID      = "407131354"   # or your tab gid
+#   (Optionally) CSV_URL = "https://...export?format=csv&gid=..." to override.
+# This file was auto-adapted for cloud deployment.
+# ------------------------------------------------------------------
 
 
 #region [ 1. 라이브러리 임포트 ]
@@ -11,340 +19,131 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 from plotly import graph_objects as go
-import plotly.io as pio
+import plotly.io as pio  # ◀◀◀ [수정] 차트 테마 적용을 위해 추가
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
-
-# ◀◀◀ [신규] Streamlit Cloud 인증을 위한 라이브러리
-import gspread
-from google.oauth2.service_account import Credentials
 #endregion
 
 #region [ 2. 기본 설정 및 공통 상수 ]
 # =====================================================
-# ◀◀◀ [수정] 페이지 설정 원본 유지
 st.set_page_config(page_title="Overview Dashboard", layout="wide", initial_sidebar_state="expanded")
 
+# ===== 구글 시트 URL (시크릿 → 안전 조합) =====
+SHEET_ID = str(st.secrets.get("SHEET_ID", "1fKVPXGN-R2bsrv018dz8zTmg431ZSBHx1PCTnMpdoWY")).strip()
+GID      = str(st.secrets.get("GID", "407131354")).strip()  # RAW_원본
 
-# ===== 네비게이션 아이템 정의 (v2.0) =====
-NAV_ITEMS = {
-    "Overview": "📊 Overview",
-    "IP 성과": "📈 IP 성과 자세히보기",
-    "데모그래픽": "👥 IP 오디언스 히트맵",
-    "비교분석": "⚖️ IP간 비교분석",
-    "성장스코어-방영지표": "🚀 성장스코어-방영지표",
-    "성장스코어-디지털": "🛰️ 성장스코어-디지털",
-    "회차별": "🎬 회차별 비교",
-}
+# URL을 항상 ASCII로 정규화해서 생성
+from urllib.parse import urlsplit, urlunsplit, quote, urlencode
 
-# ===== 데모 컬럼 순서 (페이지 2, 3에서 공통 사용) =====
-DECADES = ["10대","20대","30대","40대","50대","60대"]
-DEMO_COLS_ORDER = [f"{d}남성" for d in DECADES] + [f"{d}여성" for d in DECADES]
+_base  = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export"
+_path  = urlsplit(_base).path                     # /spreadsheets/d/<id>/export
+_path  = quote(_path, safe="/")                   # path 내 비ASCII 방지
+_query = urlencode({"format": "csv", "gid": str(GID)}, doseq=True)
+CSV_URL = urlunsplit(("https", "docs.google.com", _path, _query, "")).strip()
 
-# ===== ◀◀◀ [신규] Plotly 공통 테마 (아이디어 #3) =====
-dashboard_theme = go.Layout(
-    paper_bgcolor='rgba(0,0,0,0)',  # 카드 배경과 동일하게 투명
-    plot_bgcolor='rgba(0,0,0,0)',   # 차트 내부 배경 투명
-    font=dict(family='sans-serif', size=12, color='#333333'),
-    title=dict(font=dict(size=16, color="#111"), x=0.05),
-    legend=dict(
-        orientation='h',
-        yanchor='bottom',
-        y=1.02,
-        xanchor='right',
-        x=1,
-        bgcolor='rgba(0,0,0,0)'
-    ),
-    margin=dict(l=20, r=20, t=50, b=20), # 기본 마진
-    xaxis=dict(
-        showgrid=False, 
-        zeroline=True, 
-        zerolinecolor='#e0e0e0', 
-        zerolinewidth=1
-    ),
-    yaxis=dict(
-        showgrid=True, 
-        gridcolor='#f0f0f0', # 매우 연한 그리드
-        zeroline=True, 
-        zerolinecolor='#e0e0e0'
-    ),
-    # 테마 색상 (Plotly 기본값 사용. 필요시 주석 해제)
-    # colorway=px.colors.qualitative.Plotly 
-)
-# ◀◀◀ [수정] go.Layout 객체를 go.layout.Template으로 감싸서 등록
-pio.templates['dashboard_theme'] = go.layout.Template(layout=dashboard_theme)
-pio.templates.default = 'dashboard_theme'
-# =====================================================
+# 네비게이션 페이지 목록(유효성 체크용)
+NAV_PAGES = ["Overview", "IP 성과", "데모그래픽", "비교분석", "회차별"]
+
+# 선택: 디버그 표시 (필요 시 True)
+DEBUG_SHOW_URL = bool(st.secrets.get("DEBUG_SHOW_URL", False))
+if DEBUG_SHOW_URL:
+    st.caption(f"CSV_URL = {CSV_URL}")
 #endregion
 
-#region [ 3. 공통 함수: 데이터 로드 / 유틸리티 ]
+#region [ 3. 공통 함수 / 로딩 ]
 # =====================================================
-
-# ===== ◀◀◀ [수정] 데이터 로드 (Streamlit Secrets 사용) =====
 @st.cache_data(ttl=600)
-def load_data() -> pd.DataFrame: # url 인수 제거
+def load_data(url: str) -> pd.DataFrame:
     """
-    Streamlit Secrets를 사용하여 Google Sheets에서 데이터를 인증하고 로드합니다.
-    st.secrets에 'gcp_service_account', 'SHEET_ID', 'GID' (워크시트 이름)가 있어야 합니다.
+    1) URL을 ASCII로 정규화한 뒤 read_csv
+    2) 실패 시 requests.get → StringIO 폴백
+    3) 날짜/숫자/문자 기본 전처리
     """
-    
-    # ===== 1. Google Sheets 인증 =====
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    
-    # st.secrets에서 gcp_service_account 정보 로드
-    creds_info = st.secrets["gcp_service_account"]
-    creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
-    client = gspread.authorize(creds)
+    import io, numpy as np, pandas as pd, requests
+    from urllib.parse import urlsplit, urlunsplit, quote, urlencode, parse_qsl
 
-    # ===== 2. 데이터 로드 =====
+    def _safe_url(u: str) -> str:
+        parts = urlsplit(str(u).strip())
+        safe_path = quote(parts.path, safe="/")
+        q = urlencode(parse_qsl(parts.query, keep_blank_values=True), doseq=True)
+        return urlunsplit((parts.scheme or "https", parts.netloc, safe_path, q, ""))
+
+    safe = _safe_url(url)
+
+    # 시도 1: pandas 직접 로드
     try:
-        # st.secrets에서 시트 ID와 워크시트 이름(GID 키) 로드
-        sheet_id = st.secrets["SHEET_ID"]
-        # TOML에서 GID = "RAW"로 설정했으므로, "RAW"라는 이름의 워크시트를 엽니다.
-        worksheet_name = st.secrets["GID"] 
-        
-        spreadsheet = client.open_by_key(sheet_id)
-        worksheet = spreadsheet.worksheet(worksheet_name)
-        
-        # 데이터를 DataFrame으로 변환
-        data = worksheet.get_all_records() # 시트의 모든 데이터를 딕셔너리 리스트로 가져옴
-        df = pd.DataFrame(data)
+        df = pd.read_csv(safe)
+    except Exception:
+        # 시도 2: requests 폴백
+        resp = requests.get(safe, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        content = resp.content
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("utf-8-sig", errors="replace")
+        df = pd.read_csv(io.StringIO(text))
 
-    except gspread.exceptions.WorksheetNotFound:
-        st.error(f"Streamlit Secrets의 GID 값 ('{worksheet_name}')에 해당하는 워크시트를 찾을 수 없습니다.")
-        return pd.DataFrame()
-    except KeyError as e:
-        st.error(f"Streamlit Secrets에 필요한 키({e})가 없습니다. TOML 설정을 확인하세요.")
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Google Sheets 데이터 로드 중 오류 발생: {e}")
-        return pd.DataFrame()
-
-    # --- 3. (이하 원본 코드의 전처리 로직 동일) ---
-    
     # --- 날짜 파싱 ---
     if "주차시작일" in df.columns:
-        df["주차시작일"] = pd.to_datetime(
-            df["주차시작일"].astype(str).str.strip(),
-            format="%Y. %m. %d", # ◀◀◀ [참고] 원본 포맷 유지
-            errors="coerce"
-        )
+        df["주차시작일"] = pd.to_datetime(df["주차시작일"].astype(str).str.strip(), format="%Y. %m. %d", errors="coerce")
     if "방영시작일" in df.columns:
-        df["방영시작일"] = pd.to_datetime(
-            df["방영시작일"].astype(str).str.strip(),
-            format="%Y. %m. %d", # ◀◀◀ [참고] 원본 포맷 유지
-            errors="coerce"
-        )
+        df["방영시작일"] = pd.to_datetime(df["방영시작일"].astype(str).str.strip(), format="%Y. %m. %d", errors="coerce")
 
-    # --- 숫자형 데이터 변환 ---
-    # gspread.get_all_records()는 이미 1,000단위 콤마나 %를 제거하고 숫자/문자열로 가져옵니다.
-    # 하지만 만약을 위해 원본 코드의 숫자 변환 로직을 유지합니다.
+    # --- 숫자형 변환 ---
     if "value" in df.columns:
-        # .astype(str)을 추가하여 gspread가 숫자로 가져온 경우에도 처리되도록 보장
-        v = df["value"].astype(str).str.replace(",", "", regex=False).str.replace("%", "", regex=False)
+        v = (df["value"].astype(str)
+                     .str.replace(",", "", regex=False)
+                     .str.replace("%", "", regex=False))
         df["value"] = pd.to_numeric(v, errors="coerce").fillna(0)
 
-    # --- 문자열 데이터 정제 ---
-    for c in ["IP", "편성", "지표구분", "매체", "데모", "metric", "회차", "주차"]:
+    # --- 문자열 정제 ---
+    for c in ["IP","편성","지표구분","매체","데모","metric","회차","주차"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
 
-    # --- 파생 컬럼 생성 ---
+    # --- 파생 컬럼 ---
     if "회차" in df.columns:
         df["회차_numeric"] = df["회차"].str.extract(r"(\d+)", expand=False).astype(float)
     else:
         df["회차_numeric"] = pd.NA
 
     return df
+#endregion
 
-# ===== 일반 포맷팅 유틸 =====
-def fmt(v, digits=3, intlike=False):
-    """
-    숫자 포맷팅 헬퍼 (None이나 NaN은 '–'로 표시)
-    """
-    if v is None or pd.isna(v):
-        return "–"
-    return f"{v:,.0f}" if intlike else f"{v:.{digits}f}"
 
-# ===== KPI 카드 렌더링 유틸 =====
-def kpi(col, title, value):
+#region [ 4. 라우팅 / 네비 유틸 ]
+# =====================================================
+def get_current_page_default(default: str = "Overview") -> str:
     """
-    Streamlit 컬럼 내에 KPI 카드를 렌더링합니다.
-    """
-    with col:
-        st.markdown(
-            f'<div class="kpi-card"><div class="kpi-title">{title}</div>'
-            f'<div class="kpi-value">{value}</div></div>',
-            unsafe_allow_html=True
-        )
-
-# ===== 페이지 라우팅 유틸 =====
-def get_current_page_default(default="Overview"):
-    """
-    URL 쿼리 파라미터(?page=...)에서 현재 페이지를 읽어옵니다.
-    없으면 default 값을 반환합니다.
+    쿼리파라미터 ?page= 에서 현재 페이지를 읽고,
+    유효하지 않으면 default를 반환.
     """
     try:
-        qp = st.query_params  # Streamlit 신버전
-        p = qp.get("page", None)
-        if p is None:
-            return default
-        return p if isinstance(p, str) else p[0]
+        params = st.experimental_get_query_params()  # Streamlit Cloud 호환
     except Exception:
-        qs = st.experimental_get_query_params()  # 구버전 호환
-        return (qs.get("page", [default])[0])
+        params = {}
+    page = (params.get("page", [default]) or [default])[0]
+    if page not in NAV_PAGES:
+        page = default
+    return page
 
-# ===== 회차 옵션 생성 유틸 (페이지 5) =====
-def get_episode_options(df: pd.DataFrame) -> List[str]:
-    """데이터에서 사용 가능한 회차 목록 (문자열, '00' 제외, '차'/'화' 제거)을 추출합니다."""
-    
-    valid_options = []
-    # 숫자 회차 컬럼 우선 사용
-    if "회차_numeric" in df.columns:
-        unique_episodes_num = sorted([
-            int(ep) for ep in df["회차_numeric"].dropna().unique() if ep > 0 # 0보다 큰 경우만
-        ])
-        if unique_episodes_num:
-            max_ep_num = unique_episodes_num[-1]
-            for ep_num in unique_episodes_num: valid_options.append(str(ep_num))
-            # 마지막 회차 처리
-            last_ep_str_num = str(max_ep_num)
-            if last_ep_str_num in valid_options and valid_options[-1] != last_ep_str_num:
-                 valid_options.remove(last_ep_str_num); valid_options.append(last_ep_str_num)
-            if len(valid_options) > 0 and "(마지막화)" not in valid_options[-1]:
-                 valid_options[-1] = f"{valid_options[-1]} (마지막화)"
-            return valid_options
-        else: return []
-    # 숫자 회차 컬럼 없을 경우
-    elif "회차" in df.columns:
-        raw_options = sorted(df["회차"].dropna().unique())
-        for opt in raw_options:
-            # '00'으로 시작하는 것 제외
-            if not opt.startswith("00"):
-                cleaned_opt = re.sub(r"[화차]", "", opt) # '화' 또는 '차' 제거
-                if cleaned_opt.isdigit() and int(cleaned_opt) > 0: 
-                    valid_options.append(cleaned_opt)
-        # 숫자 기준으로 정렬
-        return sorted(list(set(valid_options)), key=lambda x: int(x) if x.isdigit() else float('inf')) 
-    else: return []
+def set_current_page(page: str) -> None:
+    """
+    현재 페이지를 쿼리파라미터에 반영.
+    """
+    if page not in NAV_PAGES:
+        page = NAV_PAGES[0]
+    st.experimental_set_query_params(page=page)
+
+def nav_button(label: str, page: str, key: str = None):
+    """
+    간단 네비 버튼 헬퍼: 클릭 시 페이지 전환.
+    """
+    if st.button(label, key=key):
+        set_current_page(page)
+        st.rerun()
 #endregion
-
-#region [ 4. Global CSS & UI Theme ] 
-# =====================================================
-import streamlit as st
-
-st.markdown("""
-<style>
-:root{
-  --page-max: 1500px;
-  --gap: 16px;
-  --radius: 14px;
-  --pad: 18px;
-  --muted: rgba(0,0,0,.65);
-  --soft:  rgba(0,0,0,.06);
-}
-
-/* 0) 페이지 컨테이너 폭 & 기본 여백 */
-.main .block-container{
-  max-width: var(--page-max);
-  padding-left: 1rem;
-  padding-right: 1rem;
-}
-
-/* 1) 헤더/타이틀 */
-h1,h2,h3{ letter-spacing: .2px; }
-
-/* 2) 뉴트럴 박스(보더/쉐도우 0) */
-.box-plain{
-  background: var(--background-color);
-  border: 0 !important;
-  box-shadow: none !important;
-  border-radius: var(--radius);
-  padding: var(--pad) calc(var(--pad) + 2px);
-  margin: 8px 0;
-}
-.divider-ghost{ height: 10px; }
-
-/* 3) KPI 그리드 & 카드 */
-.kpi-wrap{
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); /* 최소폭 보장 */
-  gap: var(--gap);
-  margin-top: 6px;
-}
-.kpi-card{
-  background: var(--background-color);
-  border: 0; 
-  box-shadow: none;
-  border-radius: var(--radius);
-  padding: var(--pad) calc(var(--pad) + 2px);
-}
-.kpi-top{
-  display:flex; align-items:center; gap:8px;
-  font-weight: 600; opacity: .9; font-size: .95rem;
-}
-.kpi-val{
-  font-size: clamp(1.4rem, 2.5vw, 2.2rem);
-  font-weight: 800; line-height: 1.1;
-  margin: 6px 0 4px;
-}
-.kpi-sub{ font-size: .86rem; color: var(--muted); }
-.kpi-divider{ height:1px; background: var(--soft); margin:10px 0; }
-
-/* 4) Select/MultiSelect 칩 간격 보정 */
-[data-baseweb="tag"]{ margin-right:6px; margin-bottom:6px; }
-
-/* 5) 전반적 보더/쉐도우 비활성 */
-.block-container .element-container, .stContainer{
-  box-shadow: none !important;
-}
-
-/* 6) 버튼/다운로드 버튼 */
-.stButton>button, .stDownloadButton>button{
-  border-radius: 10px;
-}
-
-/* 7) AgGrid 미니멀(테두리/그림자 제거 + 행간 약간) */
-.ag-theme-streamlit .ag-root-wrapper,
-.ag-theme-streamlit .ag-header,
-.ag-theme-streamlit .ag-header-cell,
-.ag-theme-streamlit .ag-row,
-.ag-theme-streamlit .ag-cell{
-  border: none !important;
-  box-shadow: none !important;
-}
-.ag-theme-streamlit .ag-row{
-  padding-top: 2px; padding-bottom: 2px;
-}
-.ag-theme-streamlit .ag-row:nth-child(even),
-.ag-theme-streamlit .ag-row:nth-child(odd){
-  background: transparent !important;
-}
-
-/* 8) 상단 고정(필터/다운로드 등) */
-.sticky-top{ position: sticky; top: 12px; z-index: 5; }
-
-/* 9) Plotly 배경 투명화 */
-.js-plotly-plot .plotly .bg{ fill: transparent !important; }
-.js-plotly-plot .plot-container{ background: transparent !important; }
-
-/* 10) 반응형 튜닝 */
-@media (max-width: 1200px){
-  :root{ --page-max: 1200px; }
-  .kpi-wrap{ grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
-}
-@media (max-width: 900px){
-  .kpi-wrap{ grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
-  .kpi-val{ font-size: clamp(1.35rem, 3.2vw, 1.9rem); }
-}
-@media (max-width: 600px){
-  .kpi-wrap{ gap: 12px; }
-  .kpi-card{ padding: 14px 16px; }
-}
-</style>
-""", unsafe_allow_html=True)
-#endregion
-
 
 #region [ 5. 사이드바 네비게이션 ]
 # =====================================================
@@ -621,11 +420,9 @@ def get_avg_demo_pop_by_episode(df_src: pd.DataFrame, medias: List[str]) -> pd.D
 #region [ 8. 페이지 1: Overview ]
 # =====================================================
 def render_overview():
-    # ◀◀◀ [수정] load_data() 호출 방식 변경
-    df = load_data()
+    df = load_data(CSV_URL)
   
     # --- 페이지 전용 필터 (메인 영역, 제목 옆에 배치) ---   
-    # ◀◀◀ [수정] 필터 영역은 컨테이너로 감싸지 않음
     filter_cols = st.columns(4) # [제목 | 편성필터 | 연도필터 | 월필터]
     
     with filter_cols[0]:
@@ -702,7 +499,6 @@ def render_overview():
         return mon_tue + sat_sun
 
     # --- 요약 카드 ---
-    # ◀◀◀ [수정] KPI 카드 영역은 컨테이너로 감싸지 않음
     st.caption('▶ IP별 평균')
 
     c1, c2, c3, c4, c5 = st.columns(5)
@@ -733,123 +529,116 @@ def render_overview():
     st.divider()
 
     # --- 주차별 시청자수 트렌드 (Stacked Bar) ---
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        df_trend = f[f["metric"]=="시청인구"].copy()
-    
-        tv_weekly = df_trend[df_trend["매체"]=="TV"].groupby("주차시작일")["value"].sum()
-        tving_livequick_weekly = df_trend[df_trend["매체"].isin(["TVING LIVE","TVING QUICK"])]\
-            .groupby("주차시작일")["value"].sum()
-        tving_vod_weekly = df_trend[df_trend["매체"]=="TVING VOD"].groupby("주차시작일")["value"].sum()
-    
-        df_bar = pd.DataFrame({
-            "주차시작일": sorted(set(tv_weekly.index) | set(tving_livequick_weekly.index) | set(tving_vod_weekly.index))
-        })
-        df_bar["TV 본방"] = df_bar["주차시작일"].map(tv_weekly).fillna(0)
-        df_bar["티빙 본방"] = df_bar["주차시작일"].map(tving_livequick_weekly).fillna(0)
-        df_bar["티빙 VOD"] = df_bar["주차시작일"].map(tving_vod_weekly).fillna(0)
-    
-        df_long = df_bar.melt(id_vars="주차시작일",
-                              value_vars=["TV 본방","티빙 본방","티빙 VOD"],
-                              var_name="구분", value_name="시청자수")
-    
-        fig = px.bar(
-            df_long, x="주차시작일", y="시청자수", color="구분", text="시청자수",
-            title="📊 주차별 시청자수 (TV 본방 / 티빙 본방 / 티빙 VOD, 누적)",
-            color_discrete_map={
-                "TV 본방": "#1f77b4",
-                "티빙 본방": "#d62728",
-                "티빙 VOD": "#ff7f7f"
-            }
-        )
-        fig.update_layout(
-            xaxis_title=None, yaxis_title=None,
-            barmode="stack", legend_title="구분",
-            title_font=dict(size=20)
-        )
-        fig.update_traces(texttemplate='%{text:,.0f}', textposition="inside")
-        st.plotly_chart(fig, use_container_width=True)
+    df_trend = f[f["metric"]=="시청인구"].copy()
 
-    # ◀◀◀ [수정] divider 위치 변경 (컨테이너 밖으로)
+    tv_weekly = df_trend[df_trend["매체"]=="TV"].groupby("주차시작일")["value"].sum()
+    tving_livequick_weekly = df_trend[df_trend["매체"].isin(["TVING LIVE","TVING QUICK"])]\
+        .groupby("주차시작일")["value"].sum()
+    tving_vod_weekly = df_trend[df_trend["매체"]=="TVING VOD"].groupby("주차시작일")["value"].sum()
+
+    df_bar = pd.DataFrame({
+        "주차시작일": sorted(set(tv_weekly.index) | set(tving_livequick_weekly.index) | set(tving_vod_weekly.index))
+    })
+    df_bar["TV 본방"] = df_bar["주차시작일"].map(tv_weekly).fillna(0)
+    df_bar["티빙 본방"] = df_bar["주차시작일"].map(tving_livequick_weekly).fillna(0)
+    df_bar["티빙 VOD"] = df_bar["주차시작일"].map(tving_vod_weekly).fillna(0)
+
+    df_long = df_bar.melt(id_vars="주차시작일",
+                          value_vars=["TV 본방","티빙 본방","티빙 VOD"],
+                          var_name="구분", value_name="시청자수")
+
+    fig = px.bar(
+        df_long, x="주차시작일", y="시청자수", color="구분", text="시청자수",
+        title="📊 주차별 시청자수 (TV 본방 / 티빙 본방 / 티빙 VOD, 누적)",
+        color_discrete_map={
+            "TV 본방": "#1f77b4",
+            "티빙 본방": "#d62728",
+            "티빙 VOD": "#ff7f7f"
+        }
+    )
+    fig.update_layout(
+        xaxis_title=None, yaxis_title=None,
+        barmode="stack", legend_title="구분",
+        title_font=dict(size=20)
+    )
+    fig.update_traces(texttemplate='%{text:,.0f}', textposition="inside")
+    st.plotly_chart(fig, use_container_width=True)
+
     st.divider()
 
     # --- 주요작품 테이블 (AgGrid) ---
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        st.markdown("#### 🎬 주요 작품 성과")
-    
-        df_perf = (
-            f.groupby("IP")
-            .agg(
-                타깃시청률=("value", lambda x: x[f.loc[x.index, "metric"]=="T시청률"].mean()),
-                가구시청률=("value", lambda x: x[f.loc[x.index, "metric"]=="H시청률"].mean()),
-                티빙LIVE=("value", lambda x: x[(f.loc[x.index, "매체"]=="TVING LIVE") & (f.loc[x.index,"metric"]=="시청인구")].sum()),
-                티빙QUICK=("value", lambda x: x[(f.loc[x.index, "매체"]=="TVING QUICK") & (f.loc[x.index,"metric"]=="시청인구")].sum()),
-                티빙VOD_6Days=("value", lambda x: x[(f.loc[x.index, "매체"]=="TVING VOD") & (f.loc[x.index,"metric"]=="시청인구")].sum()),
-                디지털조회수=("value", lambda x: x[(f.loc[x.index,"metric"]=="조회수")].sum()),
-                디지털언급량=("value", lambda x: x[(f.loc[x.index,"metric"]=="언급량")].sum()),
-                화제성순위=("value", lambda x: x[(f.loc[x.index,"metric"]=="F_Total")].min())
-            )
-            .reset_index()
-        ).sort_values("타깃시청률", ascending=False)
-    
-        fmt_fixed3 = JsCode("""
-        function(params){
-          if (params.value == null || isNaN(params.value)) return '';
-          return Number(params.value).toFixed(3);
-        }
-        """)
-        fmt_thousands = JsCode("""
-        function(params){
-          if (params.value == null || isNaN(params.value)) return '';
-          return Math.round(params.value).toLocaleString();
-        }
-        """)
-        fmt_rank = JsCode("""
-        function(params){
-          if (params.value == null || isNaN(params.value)) return '';
-          return Math.round(params.value) + '위';
-        }
-        """)
-    
-        gb = GridOptionsBuilder.from_dataframe(df_perf)
-        gb.configure_default_column(
-            sortable=True, resizable=True, filter=False,
-            cellStyle={'textAlign': 'center'},
-            headerClass='centered-header'
+    st.markdown("#### 🎬 주요 작품 성과")
+
+    df_perf = (
+        f.groupby("IP")
+        .agg(
+            타깃시청률=("value", lambda x: x[f.loc[x.index, "metric"]=="T시청률"].mean()),
+            가구시청률=("value", lambda x: x[f.loc[x.index, "metric"]=="H시청률"].mean()),
+            티빙LIVE=("value", lambda x: x[(f.loc[x.index, "매체"]=="TVING LIVE") & (f.loc[x.index,"metric"]=="시청인구")].sum()),
+            티빙QUICK=("value", lambda x: x[(f.loc[x.index, "매체"]=="TVING QUICK") & (f.loc[x.index,"metric"]=="시청인구")].sum()),
+            티빙VOD_6Days=("value", lambda x: x[(f.loc[x.index, "매체"]=="TVING VOD") & (f.loc[x.index,"metric"]=="시청인구")].sum()),
+            디지털조회수=("value", lambda x: x[(f.loc[x.index,"metric"]=="조회수")].sum()),
+            디지털언급량=("value", lambda x: x[(f.loc[x.index,"metric"]=="언급량")].sum()),
+            화제성순위=("value", lambda x: x[(f.loc[x.index,"metric"]=="F_Total")].min())
         )
-        gb.configure_grid_options(rowHeight=34, suppressMenuHide=True, domLayout='normal')
-        gb.configure_column('IP', header_name='IP', cellStyle={'textAlign':'left'})
-        gb.configure_column('타깃시청률', valueFormatter=fmt_fixed3, sort='desc')
-        gb.configure_column('가구시청률', valueFormatter=fmt_fixed3)
-        gb.configure_column('티빙LIVE', valueFormatter=fmt_thousands)
-        gb.configure_column('티빙QUICK', valueFormatter=fmt_thousands)
-        gb.configure_column('티빙VOD_6Days', valueFormatter=fmt_thousands)
-        gb.configure_column('디지털조회수', valueFormatter=fmt_thousands)
-        gb.configure_column('디지털언급량', valueFormatter=fmt_thousands)
-        gb.configure_column('화제성순위', valueFormatter=fmt_rank)
-    
-        grid_options = gb.build()
-    
-        AgGrid(
-            df_perf,
-            gridOptions=grid_options,
-            theme="streamlit",
-            height=300,
-            fit_columns_on_grid_load=True,
-            update_mode=GridUpdateMode.NO_UPDATE,
-            allow_unsafe_jscode=True
-        )
+        .reset_index()
+    ).sort_values("타깃시청률", ascending=False)
+
+    fmt_fixed3 = JsCode("""
+    function(params){
+      if (params.value == null || isNaN(params.value)) return '';
+      return Number(params.value).toFixed(3);
+    }
+    """)
+    fmt_thousands = JsCode("""
+    function(params){
+      if (params.value == null || isNaN(params.value)) return '';
+      return Math.round(params.value).toLocaleString();
+    }
+    """)
+    fmt_rank = JsCode("""
+    function(params){
+      if (params.value == null || isNaN(params.value)) return '';
+      return Math.round(params.value) + '위';
+    }
+    """)
+
+    gb = GridOptionsBuilder.from_dataframe(df_perf)
+    gb.configure_default_column(
+        sortable=True, resizable=True, filter=False,
+        cellStyle={'textAlign': 'center'},
+        headerClass='centered-header'
+    )
+    gb.configure_grid_options(rowHeight=34, suppressMenuHide=True, domLayout='normal')
+    gb.configure_column('IP', header_name='IP', cellStyle={'textAlign':'left'})
+    gb.configure_column('타깃시청률', valueFormatter=fmt_fixed3, sort='desc')
+    gb.configure_column('가구시청률', valueFormatter=fmt_fixed3)
+    gb.configure_column('티빙LIVE', valueFormatter=fmt_thousands)
+    gb.configure_column('티빙QUICK', valueFormatter=fmt_thousands)
+    gb.configure_column('티빙VOD_6Days', valueFormatter=fmt_thousands)
+    gb.configure_column('디지털조회수', valueFormatter=fmt_thousands)
+    gb.configure_column('디지털언급량', valueFormatter=fmt_thousands)
+    gb.configure_column('화제성순위', valueFormatter=fmt_rank)
+
+    grid_options = gb.build()
+
+    AgGrid(
+        df_perf,
+        gridOptions=grid_options,
+        theme="streamlit",
+        height=300,
+        fit_columns_on_grid_load=True,
+        update_mode=GridUpdateMode.NO_UPDATE,
+        allow_unsafe_jscode=True
+    )
 #endregion
 
 #region [ 9. 페이지 2: IP 성과 자세히보기 ]
 # =====================================================
 def render_ip_detail():
 
-    # ◀◀◀ [수정] load_data() 호출 방식 변경
-    df_full = load_data()
+    df_full = load_data(CSV_URL)
 
-    # ◀◀◀ [수정] 필터 영역은 컨테이너로 감싸지 않음
     filter_cols = st.columns([3, 2, 2]) # [제목 | IP선택 | 그룹기준]
     
     with filter_cols[0]:
@@ -1043,7 +832,6 @@ def render_ip_detail():
     rk_buzz  = _rank_within_program(base, "언급량",   ip_selected, val_buzz,  mode="sum",          media=None)
     rk_view  = _rank_within_program(base, "조회수",   ip_selected, val_view,  mode="sum",          media=None)
 
-    # ◀◀◀ [수정] KPI 카드 영역은 컨테이너로 감싸지 않음
     c1, c2, c3, c4, c5, c6, c7 = st.columns(7)
     kpi_with_rank(c1, "🎯 타깃시청률",    val_T,   base_T,   rk_T,     prog_label, intlike=False, digits=3)
     kpi_with_rank(c2, "🏠 가구시청률",    val_H,   base_H,   rk_H,     prog_label, intlike=False, digits=3)
@@ -1060,308 +848,297 @@ def render_ip_detail():
     common_cfg = {"scrollZoom": False, "staticPlot": False, "displayModeBar": False}
 
     # === [Row1] 시청률 추이 | 티빙추이 ===
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        cA, cB = st.columns(2)
-        with cA:
-            st.markdown("<div class='sec-title'>📈 시청률 추이 (회차별)</div>", unsafe_allow_html=True)
-            rsub = f[f["metric"].isin(["T시청률","H시청률"])].dropna(subset=["회차","회차_num"]).copy()
-            rsub = rsub.sort_values("회차_num")
-            if not rsub.empty:
-                ep_order = rsub[["회차","회차_num"]].drop_duplicates().sort_values("회차_num")["회차"].tolist()
-                t_series = rsub[rsub["metric"]=="T시청률"].groupby("회차", as_index=False)["value"].mean()
-                h_series = rsub[rsub["metric"]=="H시청률"].groupby("회차", as_index=False)["value"].mean()
-                ymax = pd.concat([t_series["value"], h_series["value"]]).max()
-                y_upper = float(ymax) * 1.4 if pd.notna(ymax) else None
-    
-                fig_rate = go.Figure()
-                fig_rate.add_trace(go.Scatter(
-                    x=h_series["회차"], y=h_series["value"],
-                    mode="lines+markers+text", name="가구시청률",
-                    text=[f"{v:.2f}" for v in h_series["value"]], textposition="top center"
-                ))
-                fig_rate.add_trace(go.Scatter(
-                    x=t_series["회차"], y=t_series["value"],
-                    mode="lines+markers+text", name="타깃시청률",
-                    text=[f"{v:.2f}" for v in t_series["value"]], textposition="top center"
-                ))
-                fig_rate.update_xaxes(categoryorder="array", categoryarray=ep_order, title=None, fixedrange=True)
-                fig_rate.update_yaxes(title=None, fixedrange=True, range=[0, y_upper] if y_upper else None)
-                fig_rate.update_layout(legend_title=None, height=chart_h, margin=dict(l=8,r=8,t=10,b=8))
-                st.plotly_chart(fig_rate, use_container_width=True, config=common_cfg)
-            else:
-                st.info("표시할 시청률 데이터가 없습니다.")
-    
-        with cB:
-            st.markdown("<div class='sec-title'>📊 TVING 시청자 추이 (회차별)</div>", unsafe_allow_html=True)
-            t_keep = ["TVING LIVE", "TVING QUICK", "TVING VOD"]
-            tsub = f[(f["metric"]=="시청인구") & (f["매체"].isin(t_keep))].dropna(subset=["회차","회차_num"]).copy()
-            tsub = tsub.sort_values("회차_num")
-            if not tsub.empty:
-                ep_order = tsub[["회차","회차_num"]].drop_duplicates().sort_values("회차_num")["회차"].tolist()
-                pvt = tsub.pivot_table(index="회차", columns="매체", values="value", aggfunc="sum").fillna(0)
-                pvt = pvt.reindex(ep_order)
-    
-                fig_tving = go.Figure()
-                for col in [c for c in ["TVING LIVE","TVING QUICK","TVING VOD"] if c in pvt.columns]:
-                    fig_tving.add_trace(go.Bar(name=col, x=pvt.index, y=pvt[col], text=None))
-                fig_tving.update_layout(barmode="stack", legend_title=None,
-                                        bargap=0.15, bargroupgap=0.05,
-                                        height=chart_h, margin=dict(l=8,r=8,t=10,b=8))
-                fig_tving.update_xaxes(categoryorder="array", categoryarray=ep_order, title=None, fixedrange=True)
-                fig_tving.update_yaxes(title=None, fixedrange=True)
-                st.plotly_chart(fig_tving, use_container_width=True, config=common_cfg)
-            else:
-                st.info("표시할 TVING 시청자 데이터가 없습니다.")
+    cA, cB = st.columns(2)
+    with cA:
+        st.markdown("<div class='sec-title'>📈 시청률 추이 (회차별)</div>", unsafe_allow_html=True)
+        rsub = f[f["metric"].isin(["T시청률","H시청률"])].dropna(subset=["회차","회차_num"]).copy()
+        rsub = rsub.sort_values("회차_num")
+        if not rsub.empty:
+            ep_order = rsub[["회차","회차_num"]].drop_duplicates().sort_values("회차_num")["회차"].tolist()
+            t_series = rsub[rsub["metric"]=="T시청률"].groupby("회차", as_index=False)["value"].mean()
+            h_series = rsub[rsub["metric"]=="H시청률"].groupby("회차", as_index=False)["value"].mean()
+            ymax = pd.concat([t_series["value"], h_series["value"]]).max()
+            y_upper = float(ymax) * 1.4 if pd.notna(ymax) else None
+
+            fig_rate = go.Figure()
+            fig_rate.add_trace(go.Scatter(
+                x=h_series["회차"], y=h_series["value"],
+                mode="lines+markers+text", name="가구시청률",
+                text=[f"{v:.2f}" for v in h_series["value"]], textposition="top center"
+            ))
+            fig_rate.add_trace(go.Scatter(
+                x=t_series["회차"], y=t_series["value"],
+                mode="lines+markers+text", name="타깃시청률",
+                text=[f"{v:.2f}" for v in t_series["value"]], textposition="top center"
+            ))
+            fig_rate.update_xaxes(categoryorder="array", categoryarray=ep_order, title=None, fixedrange=True)
+            fig_rate.update_yaxes(title=None, fixedrange=True, range=[0, y_upper] if y_upper else None)
+            fig_rate.update_layout(legend_title=None, height=chart_h, margin=dict(l=8,r=8,t=10,b=8))
+            st.plotly_chart(fig_rate, use_container_width=True, config=common_cfg)
+        else:
+            st.info("표시할 시청률 데이터가 없습니다.")
+
+    with cB:
+        st.markdown("<div class='sec-title'>📊 TVING 시청자 추이 (회차별)</div>", unsafe_allow_html=True)
+        t_keep = ["TVING LIVE", "TVING QUICK", "TVING VOD"]
+        tsub = f[(f["metric"]=="시청인구") & (f["매체"].isin(t_keep))].dropna(subset=["회차","회차_num"]).copy()
+        tsub = tsub.sort_values("회차_num")
+        if not tsub.empty:
+            ep_order = tsub[["회차","회차_num"]].drop_duplicates().sort_values("회차_num")["회차"].tolist()
+            pvt = tsub.pivot_table(index="회차", columns="매체", values="value", aggfunc="sum").fillna(0)
+            pvt = pvt.reindex(ep_order)
+
+            fig_tving = go.Figure()
+            for col in [c for c in ["TVING LIVE","TVING QUICK","TVING VOD"] if c in pvt.columns]:
+                fig_tving.add_trace(go.Bar(name=col, x=pvt.index, y=pvt[col], text=None))
+            fig_tving.update_layout(barmode="stack", legend_title=None,
+                                    bargap=0.15, bargroupgap=0.05,
+                                    height=chart_h, margin=dict(l=8,r=8,t=10,b=8))
+            fig_tving.update_xaxes(categoryorder="array", categoryarray=ep_order, title=None, fixedrange=True)
+            fig_tving.update_yaxes(title=None, fixedrange=True)
+            st.plotly_chart(fig_tving, use_container_width=True, config=common_cfg)
+        else:
+            st.info("표시할 TVING 시청자 데이터가 없습니다.")
 
     # === [Row2] 디지털조회수 | 디지털언급량 ===
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        cC, cD = st.columns(2)
-        with cC:
-            st.markdown("<div class='sec-title'>▶ 디지털 조회수</div>", unsafe_allow_html=True)
-            dview = f[f["metric"]=="조회수"].copy()
-            if not dview.empty:
-                if has_week_col and dview["주차"].notna().any():
-                    order = (dview[["주차","주차_num"]].dropna().drop_duplicates().sort_values("주차_num")["주차"].tolist())
-                    pvt = dview.pivot_table(index="주차", columns="매체", values="value", aggfunc="sum").fillna(0)
-                    pvt = pvt.reindex(order)
-                    x_vals = pvt.index.tolist(); use_category = True
-                else:
-                    pvt = (dview.pivot_table(index="주차시작일", columns="매체", values="value", aggfunc="sum")
-                                 .sort_index().fillna(0))
-                    x_vals = pvt.index.tolist(); use_category = False
-    
-                fig_view = go.Figure()
-                for col in pvt.columns:
-                    fig_view.add_trace(go.Bar(name=col, x=x_vals, y=pvt[col], text=None))
-                fig_view.update_layout(barmode="stack", legend_title=None,
-                                       bargap=0.15, bargroupgap=0.05,
-                                       height=chart_h, margin=dict(l=8,r=8,t=10,b=8))
-                if use_category:
-                    fig_view.update_xaxes(categoryorder="array", categoryarray=x_vals, title=None, fixedrange=True)
-                else:
-                    fig_view.update_xaxes(title=None, fixedrange=True)
-                fig_view.update_yaxes(title=None, fixedrange=True)
-                st.plotly_chart(fig_view, use_container_width=True, config=common_cfg)
+    cC, cD = st.columns(2)
+    with cC:
+        st.markdown("<div class='sec-title'>▶ 디지털 조회수</div>", unsafe_allow_html=True)
+        dview = f[f["metric"]=="조회수"].copy()
+        if not dview.empty:
+            if has_week_col and dview["주차"].notna().any():
+                order = (dview[["주차","주차_num"]].dropna().drop_duplicates().sort_values("주차_num")["주차"].tolist())
+                pvt = dview.pivot_table(index="주차", columns="매체", values="value", aggfunc="sum").fillna(0)
+                pvt = pvt.reindex(order)
+                x_vals = pvt.index.tolist(); use_category = True
             else:
-                st.info("표시할 조회수 데이터가 없습니다.")
-    
-        with cD:
-            st.markdown("<div class='sec-title'>💬 디지털 언급량</div>", unsafe_allow_html=True)
-            dbuzz = f[f["metric"]=="언급량"].copy()
-            if not dbuzz.empty:
-                if has_week_col and dbuzz["주차"].notna().any():
-                    order = (dbuzz[["주차","주차_num"]].dropna().drop_duplicates().sort_values("주차_num")["주차"].tolist())
-                    pvt = dbuzz.pivot_table(index="주차", columns="매체", values="value", aggfunc="sum").fillna(0)
-                    pvt = pvt.reindex(order)
-                    x_vals = pvt.index.tolist(); use_category = True
-                else:
-                    pvt = (dbuzz.pivot_table(index="주차시작일", columns="매체", values="value", aggfunc="sum")
-                                 .sort_index().fillna(0))
-                    x_vals = pvt.index.tolist(); use_category = False
-    
-                fig_buzz = go.Figure()
-                for col in pvt.columns:
-                    fig_buzz.add_trace(go.Bar(name=col, x=x_vals, y=pvt[col], text=None))
-                fig_buzz.update_layout(barmode="stack", legend_title=None,
-                                       bargap=0.15, bargroupgap=0.05,
-                                       height=chart_h, margin=dict(l=8,r=8,t=10,b=8))
-                if use_category:
-                    fig_buzz.update_xaxes(categoryorder="array", categoryarray=x_vals, title=None, fixedrange=True)
-                else:
-                    fig_buzz.update_xaxes(title=None, fixedrange=True)
-                fig_buzz.update_yaxes(title=None, fixedrange=True)
-                st.plotly_chart(fig_buzz, use_container_width=True, config=common_cfg)
+                pvt = (dview.pivot_table(index="주차시작일", columns="매체", values="value", aggfunc="sum")
+                             .sort_index().fillna(0))
+                x_vals = pvt.index.tolist(); use_category = False
+
+            fig_view = go.Figure()
+            for col in pvt.columns:
+                fig_view.add_trace(go.Bar(name=col, x=x_vals, y=pvt[col], text=None))
+            fig_view.update_layout(barmode="stack", legend_title=None,
+                                   bargap=0.15, bargroupgap=0.05,
+                                   height=chart_h, margin=dict(l=8,r=8,t=10,b=8))
+            if use_category:
+                fig_view.update_xaxes(categoryorder="array", categoryarray=x_vals, title=None, fixedrange=True)
             else:
-                st.info("표시할 언급량 데이터가 없습니다.")
+                fig_view.update_xaxes(title=None, fixedrange=True)
+            fig_view.update_yaxes(title=None, fixedrange=True)
+            st.plotly_chart(fig_view, use_container_width=True, config=common_cfg)
+        else:
+            st.info("표시할 조회수 데이터가 없습니다.")
+
+    with cD:
+        st.markdown("<div class='sec-title'>💬 디지털 언급량</div>", unsafe_allow_html=True)
+        dbuzz = f[f["metric"]=="언급량"].copy()
+        if not dbuzz.empty:
+            if has_week_col and dbuzz["주차"].notna().any():
+                order = (dbuzz[["주차","주차_num"]].dropna().drop_duplicates().sort_values("주차_num")["주차"].tolist())
+                pvt = dbuzz.pivot_table(index="주차", columns="매체", values="value", aggfunc="sum").fillna(0)
+                pvt = pvt.reindex(order)
+                x_vals = pvt.index.tolist(); use_category = True
+            else:
+                pvt = (dbuzz.pivot_table(index="주차시작일", columns="매체", values="value", aggfunc="sum")
+                             .sort_index().fillna(0))
+                x_vals = pvt.index.tolist(); use_category = False
+
+            fig_buzz = go.Figure()
+            for col in pvt.columns:
+                fig_buzz.add_trace(go.Bar(name=col, x=x_vals, y=pvt[col], text=None))
+            fig_buzz.update_layout(barmode="stack", legend_title=None,
+                                   bargap=0.15, bargroupgap=0.05,
+                                   height=chart_h, margin=dict(l=8,r=8,t=10,b=8))
+            if use_category:
+                fig_buzz.update_xaxes(categoryorder="array", categoryarray=x_vals, title=None, fixedrange=True)
+            else:
+                fig_buzz.update_xaxes(title=None, fixedrange=True)
+            fig_buzz.update_yaxes(title=None, fixedrange=True)
+            st.plotly_chart(fig_buzz, use_container_width=True, config=common_cfg)
+        else:
+            st.info("표시할 언급량 데이터가 없습니다.")
 
     # === [Row3] 화제성  ===
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        cE, cF = st.columns(2)
-        with cE:
-            st.markdown("<div class='sec-title'>🔥 화제성 지수</div>", unsafe_allow_html=True)
-            fdx = f[f["metric"]=="F_Total"].copy()
-            if not fdx.empty:
-                fdx["순위"] = pd.to_numeric(fdx["value"], errors="coerce").round().astype("Int64")
-    
-                if has_week_col and fdx["주차"].notna().any():
-                    order = (fdx[["주차","주차_num"]].dropna()
-                                                .drop_duplicates()
-                                                .sort_values("주차_num")["주차"].tolist())
-                    s = fdx.groupby("주차", as_index=True)["순위"].min().reindex(order).dropna()
-                    x_vals = s.index.tolist(); use_category = True
-                else:
-                    s = fdx.set_index("주차시작일")["순위"].sort_index().dropna()
-                    x_vals = s.index.tolist(); use_category = False
-    
-                y_min, y_max = 0.5, 10
-                labels = [f"{int(v)}위" for v in s.values]
-                text_positions = ["bottom center" if (v <= 1.5) else "top center" for v in s.values]
-    
-                fig_fx = go.Figure()
-                fig_fx.add_trace(go.Scatter(
-                    x=x_vals, y=s.values,
-                    mode="lines+markers+text", name="화제성 순위",
-                    text=labels, textposition=text_positions,
-                    textfont=dict(size=12, color="#111"),
-                    cliponaxis=False, marker=dict(size=8)
-                ))
-                fig_fx.update_yaxes(autorange=False, range=[y_max, y_min], dtick=1,
-                                    title=None, fixedrange=True)
-                if use_category:
-                    fig_fx.update_xaxes(categoryorder="array", categoryarray=x_vals,
-                                        title=None, fixedrange=True)
-                else:
-                    fig_fx.update_xaxes(title=None, fixedrange=True)
-                fig_fx.update_layout(legend_title=None, height=chart_h,
-                                     margin=dict(l=8, r=8, t=10, b=8))
-                st.plotly_chart(fig_fx, use_container_width=True, config=common_cfg)
+    cE, cF = st.columns(2)
+    with cE:
+        st.markdown("<div class='sec-title'>🔥 화제성 지수</div>", unsafe_allow_html=True)
+        fdx = f[f["metric"]=="F_Total"].copy()
+        if not fdx.empty:
+            fdx["순위"] = pd.to_numeric(fdx["value"], errors="coerce").round().astype("Int64")
+
+            if has_week_col and fdx["주차"].notna().any():
+                order = (fdx[["주차","주차_num"]].dropna()
+                                            .drop_duplicates()
+                                            .sort_values("주차_num")["주차"].tolist())
+                s = fdx.groupby("주차", as_index=True)["순위"].min().reindex(order).dropna()
+                x_vals = s.index.tolist(); use_category = True
             else:
-                st.info("표시할 화제성 지수 데이터가 없습니다.")
-    
-        with cF:
-            # ◀◀◀ [수정] 빈 공간에도 동일한 높이 적용
-            st.markdown(f"<div style='height:{chart_h}px'></div>", unsafe_allow_html=True)
+                s = fdx.set_index("주차시작일")["순위"].sort_index().dropna()
+                x_vals = s.index.tolist(); use_category = False
+
+            y_min, y_max = 0.5, 10
+            labels = [f"{int(v)}위" for v in s.values]
+            text_positions = ["bottom center" if (v <= 1.5) else "top center" for v in s.values]
+
+            fig_fx = go.Figure()
+            fig_fx.add_trace(go.Scatter(
+                x=x_vals, y=s.values,
+                mode="lines+markers+text", name="화제성 순위",
+                text=labels, textposition=text_positions,
+                textfont=dict(size=12, color="#111"),
+                cliponaxis=False, marker=dict(size=8)
+            ))
+            fig_fx.update_yaxes(autorange=False, range=[y_max, y_min], dtick=1,
+                                title=None, fixedrange=True)
+            if use_category:
+                fig_fx.update_xaxes(categoryorder="array", categoryarray=x_vals,
+                                    title=None, fixedrange=True)
+            else:
+                fig_fx.update_xaxes(title=None, fixedrange=True)
+            fig_fx.update_layout(legend_title=None, height=chart_h,
+                                 margin=dict(l=8, r=8, t=10, b=8))
+            st.plotly_chart(fig_fx, use_container_width=True, config=common_cfg)
+        else:
+            st.info("표시할 화제성 지수 데이터가 없습니다.")
+
+    with cF:
+        st.markdown(f"<div style='height:{chart_h}px'></div>", unsafe_allow_html=True)
 
     # === [Row4] TV/TVING 데모분포  ===
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        cG, cH = st.columns(2)
-    
-        tv_demo = f[(f["매체"]=="TV") & (f["metric"]=="시청인구") & f["데모"].notna()].copy()
-        render_gender_pyramid(cG, "🎯 TV 데모 분포", tv_demo, height=260)
-    
-        t_keep = ["TVING LIVE", "TVING QUICK", "TVING VOD"]
-        tving_demo = f[(f["매체"].isin(t_keep)) & (f["metric"]=="시청인구") & f["데모"].notna()].copy()
-        render_gender_pyramid(cH, "📺 TVING 데모 분포", tving_demo, height=260)
+    cG, cH = st.columns(2)
+
+    tv_demo = f[(f["매체"]=="TV") & (f["metric"]=="시청인구") & f["데모"].notna()].copy()
+    render_gender_pyramid(cG, "🎯 TV 데모 분포", tv_demo, height=260)
+
+    t_keep = ["TVING LIVE", "TVING QUICK", "TVING VOD"]
+    tving_demo = f[(f["매체"].isin(t_keep)) & (f["metric"]=="시청인구") & f["데모"].notna()].copy()
+    render_gender_pyramid(cH, "📺 TVING 데모 분포", tving_demo, height=260)
 
     st.divider()
 
     # === [Row5] 데모분석 상세 표 (AgGrid) ===
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        st.markdown("#### 👥 데모분석 상세 표")
-        
-        # --- [페이지 2]용 데모 테이블 빌더 ---
-        def _build_demo_table_numeric(df_src: pd.DataFrame, medias: List[str]) -> pd.DataFrame:
-            sub = df_src[
-                (df_src["metric"] == "시청인구") &
-                (df_src["데모"].notna()) &
-                (df_src["매체"].isin(medias))
-            ].copy()
-            if sub.empty:
-                return pd.DataFrame(columns=["회차"] + DEMO_COLS_ORDER)
+    st.markdown("#### 👥 데모분석 상세 표")
     
-            sub["성별"] = sub["데모"].apply(_gender_from_demo) # '기타' 반환
-            sub["연령대_대"] = sub["데모"].apply(_decade_label_clamped) # 공통 유틸
-            sub = sub[sub["성별"].isin(["남","여"]) & sub["연령대_대"].notna()].copy()
-            sub = sub.dropna(subset=["회차_num"])
-            sub["회차_num"] = sub["회차_num"].astype(int)
-            sub["라벨"] = sub.apply(lambda r: f"{r['연령대_대']}{'남성' if r['성별']=='남' else '여성'}", axis=1)
-    
-            pvt = sub.pivot_table(index="회차_num", columns="라벨", values="value", aggfunc="sum").fillna(0)
-    
-            for c in DEMO_COLS_ORDER: # 공통 유틸
-                if c not in pvt.columns:
-                    pvt[c] = 0
-            pvt = pvt[DEMO_COLS_ORDER].sort_index()
-            pvt.insert(0, "회차", pvt.index.map(_fmt_ep)) # 공통 유틸
-            return pvt.reset_index(drop=True)
-    
-        # --- [페이지 2]용 AgGrid 렌더러 ---
-        diff_renderer = JsCode("""
-        function(params){
-          const api = params.api;
-          const colId = params.column.getColId();
-          const rowIndex = params.node.rowIndex;
-          const val = Number(params.value || 0);
-          if (colId === "회차") return params.value;
-    
-          let arrow = "";
-          if (rowIndex > 0) {
-            const prev = api.getDisplayedRowAtIndex(rowIndex - 1);
-            if (prev && prev.data && prev.data[colId] != null) {
-              const pv = Number(prev.data[colId] || 0);
-              if (val > pv) arrow = "🔺";
-              else if (val < pv) arrow = "▾";
-            }
-          }
-          const txt = Math.round(val).toLocaleString();
-          return arrow + txt;
+    # --- [페이지 2]용 데모 테이블 빌더 ---
+    def _build_demo_table_numeric(df_src: pd.DataFrame, medias: List[str]) -> pd.DataFrame:
+        sub = df_src[
+            (df_src["metric"] == "시청인구") &
+            (df_src["데모"].notna()) &
+            (df_src["매체"].isin(medias))
+        ].copy()
+        if sub.empty:
+            return pd.DataFrame(columns=["회차"] + DEMO_COLS_ORDER)
+
+        sub["성별"] = sub["데모"].apply(_gender_from_demo) # '기타' 반환
+        sub["연령대_대"] = sub["데모"].apply(_decade_label_clamped) # 공통 유틸
+        sub = sub[sub["성별"].isin(["남","여"]) & sub["연령대_대"].notna()].copy()
+        sub = sub.dropna(subset=["회차_num"])
+        sub["회차_num"] = sub["회차_num"].astype(int)
+        sub["라벨"] = sub.apply(lambda r: f"{r['연령대_대']}{'남성' if r['성별']=='남' else '여성'}", axis=1)
+
+        pvt = sub.pivot_table(index="회차_num", columns="라벨", values="value", aggfunc="sum").fillna(0)
+
+        for c in DEMO_COLS_ORDER: # 공통 유틸
+            if c not in pvt.columns:
+                pvt[c] = 0
+        pvt = pvt[DEMO_COLS_ORDER].sort_index()
+        pvt.insert(0, "회차", pvt.index.map(_fmt_ep)) # 공통 유틸
+        return pvt.reset_index(drop=True)
+
+    # --- [페이지 2]용 AgGrid 렌더러 ---
+    diff_renderer = JsCode("""
+    function(params){
+      const api = params.api;
+      const colId = params.column.getColId();
+      const rowIndex = params.node.rowIndex;
+      const val = Number(params.value || 0);
+      if (colId === "회차") return params.value;
+
+      let arrow = "";
+      if (rowIndex > 0) {
+        const prev = api.getDisplayedRowAtIndex(rowIndex - 1);
+        if (prev && prev.data && prev.data[colId] != null) {
+          const pv = Number(prev.data[colId] || 0);
+          if (val > pv) arrow = "🔺";
+          else if (val < pv) arrow = "▾";
         }
-        """)
-    
-        _js_demo_cols = "[" + ",".join([f'"{c}"' for c in DEMO_COLS_ORDER]) + "]" # 공통 유틸
-        cell_style_renderer = JsCode(f"""
-        function(params){{
-          const field = params.colDef.field;
-          if (field === "회차") {{
-            return {{'text-align':'left','font-weight':'600','background-color':'#fff'}};
-          }}
-          const COLS = {_js_demo_cols};
-          let rowVals = [];
-          for (let k of COLS) {{
-            const v = Number((params.data && params.data[k] != null) ? params.data[k] : NaN);
-            if (!isNaN(v)) rowVals.push(v);
-          }}
-          let bg = '#ffffff';
-          if (rowVals.length > 0) {{
-            const v = Number(params.value || 0);
-            const mn = Math.min.apply(null, rowVals);
-            const mx = Math.max.apply(null, rowVals);
-            let norm = 0.5;
-            if (mx > mn) norm = (v - mn) / (mx - mn);
-            const alpha = 0.12 + 0.45 * Math.max(0, Math.min(1, norm));
-            bg = 'rgba(30,90,255,' + alpha.toFixed(3) + ')';
-          }}
-          return {{
-            'background-color': bg,
-            'text-align': 'right',
-            'padding': '2px 4px',
-            'font-weight': '500'
-          }};
-        }}
-        """)
-    
-        def _render_aggrid_table(df_numeric: pd.DataFrame, title: str, height: int = 320):
-            st.markdown(f"###### {title}")
-            if df_numeric.empty:
-                st.info("표시할 데이터가 없습니다.")
-                return
-    
-            gb = GridOptionsBuilder.from_dataframe(df_numeric)
-            gb.configure_grid_options(rowHeight=34, suppressMenuHide=True, domLayout='normal')
-            gb.configure_default_column(
-                sortable=False, resizable=True, filter=False,
-                cellStyle={'textAlign': 'right'}, headerClass='centered-header bold-header'
+      }
+      const txt = Math.round(val).toLocaleString();
+      return arrow + txt;
+    }
+    """)
+
+    _js_demo_cols = "[" + ",".join([f'"{c}"' for c in DEMO_COLS_ORDER]) + "]" # 공통 유틸
+    cell_style_renderer = JsCode(f"""
+    function(params){{
+      const field = params.colDef.field;
+      if (field === "회차") {{
+        return {{'text-align':'left','font-weight':'600','background-color':'#fff'}};
+      }}
+      const COLS = {_js_demo_cols};
+      let rowVals = [];
+      for (let k of COLS) {{
+        const v = Number((params.data && params.data[k] != null) ? params.data[k] : NaN);
+        if (!isNaN(v)) rowVals.push(v);
+      }}
+      let bg = '#ffffff';
+      if (rowVals.length > 0) {{
+        const v = Number(params.value || 0);
+        const mn = Math.min.apply(null, rowVals);
+        const mx = Math.max.apply(null, rowVals);
+        let norm = 0.5;
+        if (mx > mn) norm = (v - mn) / (mx - mn);
+        const alpha = 0.12 + 0.45 * Math.max(0, Math.min(1, norm));
+        bg = 'rgba(30,90,255,' + alpha.toFixed(3) + ')';
+      }}
+      return {{
+        'background-color': bg,
+        'text-align': 'right',
+        'padding': '2px 4px',
+        'font-weight': '500'
+      }};
+    }}
+    """)
+
+    def _render_aggrid_table(df_numeric: pd.DataFrame, title: str, height: int = 320):
+        st.markdown(f"###### {title}")
+        if df_numeric.empty:
+            st.info("표시할 데이터가 없습니다.")
+            return
+
+        gb = GridOptionsBuilder.from_dataframe(df_numeric)
+        gb.configure_grid_options(rowHeight=34, suppressMenuHide=True, domLayout='normal')
+        gb.configure_default_column(
+            sortable=False, resizable=True, filter=False,
+            cellStyle={'textAlign': 'right'}, headerClass='centered-header bold-header'
+        )
+        gb.configure_column("회차", header_name="회차", cellStyle={'textAlign': 'left'})
+
+        for c in [col for col in df_numeric.columns if col != "회차"]:
+            gb.configure_column(
+                c,
+                header_name=c,
+                cellRenderer=diff_renderer,
+                cellStyle=cell_style_renderer
             )
-            gb.configure_column("회차", header_name="회차", cellStyle={'textAlign': 'left'})
-    
-            for c in [col for col in df_numeric.columns if col != "회차"]:
-                gb.configure_column(
-                    c,
-                    header_name=c,
-                    cellRenderer=diff_renderer,
-                    cellStyle=cell_style_renderer
-                )
-            grid_options = gb.build()
-            AgGrid(
-                df_numeric,
-                gridOptions=grid_options,
-                theme="streamlit",
-                height=height,
-                fit_columns_on_grid_load=True,
-                update_mode=GridUpdateMode.NO_UPDATE,
-                allow_unsafe_jscode=True
-            )
-    
-        tv_numeric = _build_demo_table_numeric(f, ["TV"])
-        _render_aggrid_table(tv_numeric, "📺 TV (시청자수)")
-    
-        tving_numeric = _build_demo_table_numeric(f, ["TVING LIVE", "TVING QUICK", "TVING VOD"])
-        _render_aggrid_table(tving_numeric, "▶︎ TVING 합산 (LIVE/QUICK/VOD) 시청자수")
+        grid_options = gb.build()
+        AgGrid(
+            df_numeric,
+            gridOptions=grid_options,
+            theme="streamlit",
+            height=height,
+            fit_columns_on_grid_load=True,
+            update_mode=GridUpdateMode.NO_UPDATE,
+            allow_unsafe_jscode=True
+        )
+
+    tv_numeric = _build_demo_table_numeric(f, ["TV"])
+    _render_aggrid_table(tv_numeric, "📺 TV (시청자수)")
+
+    tving_numeric = _build_demo_table_numeric(f, ["TVING LIVE", "TVING QUICK", "TVING VOD"])
+    _render_aggrid_table(tving_numeric, "▶︎ TVING 합산 (LIVE/QUICK/VOD) 시청자수")
 #endregion
 
 #region [ 10. 페이지 3: IP간 데모분석 ]
@@ -1519,11 +1296,9 @@ def render_heatmap(df_plot: pd.DataFrame, title: str):
 # ===== [페이지 3] 메인 렌더링 함수 =====
 def render_demographic():
     # --- 데이터 로드 ---
-    # ◀◀◀ [수정] load_data() 호출 방식 변경
-    df_all = load_data()
+    df_all = load_data(CSV_URL)
 
     # --- 페이지 전용 필터 (메인 영역) ---
-    # ◀◀◀ [수정] 필터 영역은 컨테이너로 감싸지 않음
     ip_options = sorted(df_all["IP"].dropna().unique().tolist())
     selected_ip1 = None; selected_ip2 = None; selected_group_criteria = None
 
@@ -1658,9 +1433,7 @@ def render_demographic():
     # --- Index 계산 ---
     if df_base.empty:
         st.warning("기준 IP의 데모 데이터를 생성할 수 없습니다.")
-        # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-        with st.container(border=True):
-            render_heatmap(pd.DataFrame(), f"{media_list_label} 데모 증감 비교 ({selected_ip1} vs {comp_name})") # <-- 히트맵 호출
+        render_heatmap(pd.DataFrame(), f"{media_list_label} 데모 증감 비교 ({selected_ip1} vs {comp_name})") # <-- 히트맵 호출
         return
     if df_comp.empty:
          st.warning(f"비교 대상({comp_name})의 데모 데이터를 생성할 수 없습니다. Index 계산 시 비교값은 0으로 처리됩니다.")
@@ -1697,10 +1470,8 @@ def render_demographic():
         df_index[comp_col] = comp_values 
 
     # --- 테이블 렌더링 ---
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        table_title = f"{media_list_label} 데모 증감 비교 ({selected_ip1} vs {comp_name})"
-        render_heatmap(df_index, table_title) # <-- 새로운 히트맵 함수 호출
+    table_title = f"{media_list_label} 데모 증감 비교 ({selected_ip1} vs {comp_name})"
+    render_heatmap(df_index, table_title) # <-- 새로운 히트맵 함수 호출
 #endregion
 
 #region [ 11. 페이지 4: IP간 비교분석 ]
@@ -1844,7 +1615,6 @@ def render_ip_vs_group_comparison(
     delta_rank = calc_delta_rank(kpis_ip.get('화제성 순위'), kpis_group.get('화제성 순위'))
 
     # --- 1. 요약 KPI 카드 (한 줄) ---
-    # ◀◀◀ [수정] KPI 카드 영역은 컨테이너로 감싸지 않음
     st.markdown(f"#### 1. 주요 성과 ({group_name} 대비)")
     
     kpi_cols = st.columns(7) 
@@ -1866,209 +1636,203 @@ def render_ip_vs_group_comparison(
     st.divider()
 
     # --- 2. 성과 시그니처 (Radar) + 주요 지표 편차 (Bar) ---
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        st.markdown(f"#### 2. 성과 포지셔닝 ({group_name} 대비)")
+    st.markdown(f"#### 2. 성과 포지셔닝 ({group_name} 대비)")
+    
+    col_radar, col_dev = st.columns(2) 
+
+    # 왼쪽: Radar Chart
+    with col_radar:
+        st.markdown(f"###### 성과 시그니처 (백분위 점수)")
         
-        col_radar, col_dev = st.columns(2) 
-    
-        # 왼쪽: Radar Chart
-        with col_radar:
-            st.markdown(f"###### 성과 시그니처 (백분위 점수)")
-            
-            group_ips = df_group["IP"].unique()
-            group_percentiles_avg = kpi_percentiles.loc[kpi_percentiles.index.isin(group_ips)].mean()
-            
-            radar_metrics = ["T시청률", "H시청률", "TVING 라이브+QUICK", "TVING VOD", "디지털 조회수", "디지털 언급량"]
-            
-            score_ip_series = kpi_percentiles.loc[ip][radar_metrics]
-            score_group_series = group_percentiles_avg[radar_metrics]
-            
-            fig_radar_group = go.Figure()
-            fig_radar_group.add_trace(go.Scatterpolar(
-                r=score_ip_series.values,
-                theta=score_ip_series.index.map({ 
-                    "T시청률": "타깃", "H시청률": "가구", 
-                    "TVING 라이브+QUICK": "TVING L+Q", "TVING VOD": "TVING VOD", 
-                    "디지털 조회수": "조회수", "디지털 언급량": "언급량"
-                }),
-                fill='toself', name=ip, line=dict(color="#d93636") 
-            ))
-            fig_radar_group.add_trace(go.Scatterpolar(
-                r=score_group_series.values,
-                theta=score_group_series.index.map({
-                     "T시청률": "타깃", "H시청률": "가구", 
-                     "TVING 라이브+QUICK": "TVING L+Q", "TVING VOD": "TVING VOD", 
-                     "디지털 조회수": "조회수", "디지털 언급량": "언급량"
-                }),
-                fill='toself', name=group_name, line=dict(color="#2a61cc") 
-            ))
-            fig_radar_group.update_layout(
-                polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-                showlegend=True, height=350, 
-                margin=dict(l=60, r=60, t=40, b=40), 
-                legend=dict(orientation="h", yanchor="bottom", y=1.05)
-            )
-            st.plotly_chart(fig_radar_group, use_container_width=True)
-    
-        # 오른쪽: Deviation Bar Chart
-        with col_dev:
-            st.markdown(f"###### 주요 지표 편차 (%)")
-            
-            metrics_to_compare = {
+        group_ips = df_group["IP"].unique()
+        group_percentiles_avg = kpi_percentiles.loc[kpi_percentiles.index.isin(group_ips)].mean()
+        
+        radar_metrics = ["T시청률", "H시청률", "TVING 라이브+QUICK", "TVING VOD", "디지털 조회수", "디지털 언급량"]
+        
+        score_ip_series = kpi_percentiles.loc[ip][radar_metrics]
+        score_group_series = group_percentiles_avg[radar_metrics]
+        
+        fig_radar_group = go.Figure()
+        fig_radar_group.add_trace(go.Scatterpolar(
+            r=score_ip_series.values,
+            theta=score_ip_series.index.map({ 
                 "T시청률": "타깃", "H시청률": "가구", 
                 "TVING 라이브+QUICK": "TVING L+Q", "TVING VOD": "TVING VOD", 
                 "디지털 조회수": "조회수", "디지털 언급량": "언급량"
-            }
-            delta_data = []
-            for m_key, m_label in metrics_to_compare.items():
-                delta_val = calc_delta(kpis_ip.get(m_key), kpis_group.get(m_key))
-                delta_data.append({"metric": m_label, "delta_pct": (delta_val * 100) if delta_val is not None else 0})
-                
-            df_delta = pd.DataFrame(delta_data)
-            df_delta["color"] = df_delta["delta_pct"].apply(lambda x: "#d93636" if x > 0 else "#2a61cc")
+            }),
+            fill='toself', name=ip, line=dict(color="#d93636") 
+        ))
+        fig_radar_group.add_trace(go.Scatterpolar(
+            r=score_group_series.values,
+            theta=score_group_series.index.map({
+                 "T시청률": "타깃", "H시청률": "가구", 
+                 "TVING 라이브+QUICK": "TVING L+Q", "TVING VOD": "TVING VOD", 
+                 "디지털 조회수": "조회수", "디지털 언급량": "언급량"
+            }),
+            fill='toself', name=group_name, line=dict(color="#2a61cc") 
+        ))
+        fig_radar_group.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            showlegend=True, height=350, 
+            margin=dict(l=60, r=60, t=40, b=40), 
+            legend=dict(orientation="h", yanchor="bottom", y=1.05)
+        )
+        st.plotly_chart(fig_radar_group, use_container_width=True)
+
+    # 오른쪽: Deviation Bar Chart
+    with col_dev:
+        st.markdown(f"###### 주요 지표 편차 (%)")
+        
+        metrics_to_compare = {
+            "T시청률": "타깃", "H시청률": "가구", 
+            "TVING 라이브+QUICK": "TVING L+Q", "TVING VOD": "TVING VOD", 
+            "디지털 조회수": "조회수", "디지털 언급량": "언급량"
+        }
+        delta_data = []
+        for m_key, m_label in metrics_to_compare.items():
+            delta_val = calc_delta(kpis_ip.get(m_key), kpis_group.get(m_key))
+            delta_data.append({"metric": m_label, "delta_pct": (delta_val * 100) if delta_val is not None else 0})
             
-            fig_dev_kpi = px.bar(df_delta, x="metric", y="delta_pct", text="delta_pct")
-            fig_dev_kpi.update_traces(
-                texttemplate='%{text:.1f}%', 
-                textposition='outside', 
-                marker_color=df_delta["color"]
-            )
-            fig_dev_kpi.update_layout(
-                height=350, yaxis_title="편차 (%)", 
-                xaxis_title=None, margin=dict(t=40, b=0)
-            ) 
-            st.plotly_chart(fig_dev_kpi, use_container_width=True)
+        df_delta = pd.DataFrame(delta_data)
+        df_delta["color"] = df_delta["delta_pct"].apply(lambda x: "#d93636" if x > 0 else "#2a61cc")
+        
+        fig_dev_kpi = px.bar(df_delta, x="metric", y="delta_pct", text="delta_pct")
+        fig_dev_kpi.update_traces(
+            texttemplate='%{text:.1f}%', 
+            textposition='outside', 
+            marker_color=df_delta["color"]
+        )
+        fig_dev_kpi.update_layout(
+            height=350, yaxis_title="편차 (%)", 
+            xaxis_title=None, margin=dict(t=40, b=0)
+        ) 
+        st.plotly_chart(fig_dev_kpi, use_container_width=True)
 
     st.divider()
 
     # --- 3. 트렌드 비교 (타깃 / 가구 분리) ---
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        st.markdown(f"#### 3. 시청률 트렌드 비교 ({group_name} 대비)")
-        col_trend_t, col_trend_h = st.columns(2)
-        
-        with col_trend_t:
-            st.markdown("###### 🎯 타깃시청률 (회차별)")
-            ip_trend_t = df_ip[df_ip["metric"] == "T시청률"].groupby("회차_numeric")["value"].mean().reset_index()
-            ip_trend_t["구분"] = ip
-            group_ep_avg_t = df_group[df_group["metric"] == "T시청률"].groupby(["IP", "회차_numeric"])["value"].mean().reset_index()
-            group_trend_t = group_ep_avg_t.groupby("회차_numeric")["value"].mean().reset_index()
-            group_trend_t["구분"] = group_name
-            trend_data_t = pd.concat([ip_trend_t, group_trend_t])
-            
-            if not trend_data_t.empty:
-                fig_trend_t = px.line(
-                    trend_data_t, x="회차_numeric", y="value", color="구분", line_dash="구분", markers=True, 
-                    color_discrete_map={ip: "#d93636", group_name: "#aaaaaa"}, 
-                    line_dash_map={ip: "solid", group_name: "dot"}
-                )
-                fig_trend_t.update_layout(
-                    height=350, yaxis_title="타깃시청률 (%)", xaxis_title="회차", 
-                    margin=dict(t=20, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02)
-                )
-                st.plotly_chart(fig_trend_t, use_container_width=True)
-            else: 
-                st.info("타깃시청률 트렌드 데이터 없음")
+    st.markdown(f"#### 3. 시청률 트렌드 비교 ({group_name} 대비)")
+    col_trend_t, col_trend_h = st.columns(2)
     
-        with col_trend_h:
-            st.markdown("###### 🏠 가구시청률 (회차별)")
-            ip_trend_h = df_ip[df_ip["metric"] == "H시청률"].groupby("회차_numeric")["value"].mean().reset_index()
-            ip_trend_h["구분"] = ip
-            group_ep_avg_h = df_group[df_group["metric"] == "H시청률"].groupby(["IP", "회차_numeric"])["value"].mean().reset_index()
-            group_trend_h = group_ep_avg_h.groupby("회차_numeric")["value"].mean().reset_index()
-            group_trend_h["구분"] = group_name
-            trend_data_h = pd.concat([ip_trend_h, group_trend_h])
-            
-            if not trend_data_h.empty:
-                fig_trend_h = px.line(
-                    trend_data_h, x="회차_numeric", y="value", color="구분", line_dash="구분", markers=True, 
-                    color_discrete_map={ip: "#d93636", group_name: "#aaaaaa"}, 
-                    line_dash_map={ip: "solid", group_name: "dot"}
-                )
-                fig_trend_h.update_layout(
-                    height=350, yaxis_title="가구시청률 (%)", xaxis_title="회차", 
-                    margin=dict(t=20, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02)
-                )
-                st.plotly_chart(fig_trend_h, use_container_width=True)
-            else: 
-                st.info("가구시청률 트렌드 데이터 없음")
+    with col_trend_t:
+        st.markdown("###### 🎯 타깃시청률 (회차별)")
+        ip_trend_t = df_ip[df_ip["metric"] == "T시청률"].groupby("회차_numeric")["value"].mean().reset_index()
+        ip_trend_t["구분"] = ip
+        group_ep_avg_t = df_group[df_group["metric"] == "T시청률"].groupby(["IP", "회차_numeric"])["value"].mean().reset_index()
+        group_trend_t = group_ep_avg_t.groupby("회차_numeric")["value"].mean().reset_index()
+        group_trend_t["구분"] = group_name
+        trend_data_t = pd.concat([ip_trend_t, group_trend_t])
+        
+        if not trend_data_t.empty:
+            fig_trend_t = px.line(
+                trend_data_t, x="회차_numeric", y="value", color="구분", line_dash="구분", markers=True, 
+                color_discrete_map={ip: "#d93636", group_name: "#aaaaaa"}, 
+                line_dash_map={ip: "solid", group_name: "dot"}
+            )
+            fig_trend_t.update_layout(
+                height=350, yaxis_title="타깃시청률 (%)", xaxis_title="회차", 
+                margin=dict(t=20, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02)
+            )
+            st.plotly_chart(fig_trend_t, use_container_width=True)
+        else: 
+            st.info("타깃시청률 트렌드 데이터 없음")
+
+    with col_trend_h:
+        st.markdown("###### 🏠 가구시청률 (회차별)")
+        ip_trend_h = df_ip[df_ip["metric"] == "H시청률"].groupby("회차_numeric")["value"].mean().reset_index()
+        ip_trend_h["구분"] = ip
+        group_ep_avg_h = df_group[df_group["metric"] == "H시청률"].groupby(["IP", "회차_numeric"])["value"].mean().reset_index()
+        group_trend_h = group_ep_avg_h.groupby("회차_numeric")["value"].mean().reset_index()
+        group_trend_h["구분"] = group_name
+        trend_data_h = pd.concat([ip_trend_h, group_trend_h])
+        
+        if not trend_data_h.empty:
+            fig_trend_h = px.line(
+                trend_data_h, x="회차_numeric", y="value", color="구분", line_dash="구분", markers=True, 
+                color_discrete_map={ip: "#d93636", group_name: "#aaaaaa"}, 
+                line_dash_map={ip: "solid", group_name: "dot"}
+            )
+            fig_trend_h.update_layout(
+                height=350, yaxis_title="가구시청률 (%)", xaxis_title="회차", 
+                margin=dict(t=20, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02)
+            )
+            st.plotly_chart(fig_trend_h, use_container_width=True)
+        else: 
+            st.info("가구시청률 트렌드 데이터 없음")
             
     st.divider()
 
     # --- 4. 데모 비교 (Grouped Bar, TV/TVING 분리, 시청인구 비교) ---
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        st.markdown(f"#### 4. 시청인구 비교 ({group_name} 대비)")
-        col_demo_tv, col_demo_tving = st.columns(2)
+    st.markdown(f"#### 4. 시청인구 비교 ({group_name} 대비)")
+    col_demo_tv, col_demo_tving = st.columns(2)
+    
+    def get_demo_avg_pop(df_demo_src, media_filter: List[str]):
+        df_demo = df_demo_src[
+            (df_demo_src["metric"] == "시청인구") & 
+            (df_demo_src["매체"].isin(media_filter)) & 
+            (df_demo_src["데모"].notna())
+        ].copy()
+        df_demo["연령대_대"] = df_demo["데모"].apply(_to_decade_label)
+        df_demo["성별"] = df_demo["데모"].apply(_gender_from_demo)
+        df_demo = df_demo[df_demo["성별"].isin(["남", "여"]) & (df_demo["연령대_대"] != "기타")]
+        df_demo["데모_구분"] = df_demo["연령대_대"] + df_demo["성별"]
         
-        def get_demo_avg_pop(df_demo_src, media_filter: List[str]):
-            df_demo = df_demo_src[
-                (df_demo_src["metric"] == "시청인구") & 
-                (df_demo_src["매체"].isin(media_filter)) & 
-                (df_demo_src["데모"].notna())
-            ].copy()
-            df_demo["연령대_대"] = df_demo["데모"].apply(_to_decade_label)
-            df_demo["성별"] = df_demo["데모"].apply(_gender_from_demo)
-            df_demo = df_demo[df_demo["성별"].isin(["남", "여"]) & (df_demo["연령대_대"] != "기타")]
-            df_demo["데모_구분"] = df_demo["연령대_대"] + df_demo["성별"]
-            
-            # IP별, 회차별 데모 합계 -> 데모별 평균 (IP*회차 평균)
-            agg = df_demo.groupby(["IP", "회차_numeric", "데모_구분"])["value"].sum().reset_index()
-            avg_pop = agg.groupby("데모_구분")["value"].mean() 
-            return avg_pop
-    
-        with col_demo_tv:
-            st.markdown(f"###### 📺 TV (평균 시청인구)")
-            ip_pop_tv = get_demo_avg_pop(df_ip, ["TV"])
-            group_pop_tv = get_demo_avg_pop(df_group, ["TV"])
-            df_demo_tv = pd.DataFrame({"IP": ip_pop_tv, "Group": group_pop_tv}).fillna(0).reset_index()
-            df_demo_tv_melt = df_demo_tv.melt(id_vars="데모_구분", var_name="구분", value_name="시청인구")
-            
-            sort_map = {f"{d}대{'남' if g == 0 else '여'}": d*10 + g for d in range(1, 7) for g in range(2)}
-            df_demo_tv_melt["sort_key"] = df_demo_tv_melt["데모_구분"].map(sort_map).fillna(999)
-            df_demo_tv_melt = df_demo_tv_melt.sort_values("sort_key")
-    
-            if not df_demo_tv_melt.empty:
-                fig_demo_tv = px.bar(
-                    df_demo_tv_melt, x="데모_구분", y="시청인구", color="구분", barmode="group", 
-                    text="시청인구", color_discrete_map={"IP": "#d93636", "Group": "#2a61cc"}
-                )
-                fig_demo_tv.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-                fig_demo_tv.update_layout(
-                    height=350, yaxis_title="평균 시청인구", xaxis_title=None, 
-                    margin=dict(t=20, b=0), 
-                    legend=dict(title=None, orientation="h", yanchor="bottom", y=1.02)
-                )
-                st.plotly_chart(fig_demo_tv, use_container_width=True)
-            else: 
-                st.info("TV 데모 데이터 없음")
-    
-        with col_demo_tving:
-            st.markdown(f"###### ▶️ TVING (평균 시청인구)")
-            tving_media = ["TVING LIVE", "TVING QUICK", "TVING VOD"]
-            ip_pop_tving = get_demo_avg_pop(df_ip, tving_media)
-            group_pop_tving = get_demo_avg_pop(df_group, tving_media)
-            df_demo_tving = pd.DataFrame({"IP": ip_pop_tving, "Group": group_pop_tving}).fillna(0).reset_index()
-            df_demo_tving_melt = df_demo_tving.melt(id_vars="데모_구분", var_name="구분", value_name="시청인구")
-            
-            df_demo_tving_melt["sort_key"] = df_demo_tving_melt["데모_구분"].map(sort_map).fillna(999)
-            df_demo_tving_melt = df_demo_tving_melt.sort_values("sort_key")
-    
-            if not df_demo_tving_melt.empty:
-                fig_demo_tving = px.bar(
-                    df_demo_tving_melt, x="데모_구분", y="시청인구", color="구분", barmode="group", 
-                    text="시청인구", color_discrete_map={"IP": "#d93636", "Group": "#2a61cc"}
-                )
-                fig_demo_tving.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-                fig_demo_tving.update_layout(
-                    height=350, yaxis_title="평균 시청인구", xaxis_title=None, 
-                    margin=dict(t=20, b=0), 
-                    legend=dict(title=None, orientation="h", yanchor="bottom", y=1.02)
-                )
-                st.plotly_chart(fig_demo_tving, use_container_width=True)
-            else: 
-                st.info("TVING 데모 데이터 없음")
+        # IP별, 회차별 데모 합계 -> 데모별 평균 (IP*회차 평균)
+        agg = df_demo.groupby(["IP", "회차_numeric", "데모_구분"])["value"].sum().reset_index()
+        avg_pop = agg.groupby("데모_구분")["value"].mean() 
+        return avg_pop
+
+    with col_demo_tv:
+        st.markdown(f"###### 📺 TV (평균 시청인구)")
+        ip_pop_tv = get_demo_avg_pop(df_ip, ["TV"])
+        group_pop_tv = get_demo_avg_pop(df_group, ["TV"])
+        df_demo_tv = pd.DataFrame({"IP": ip_pop_tv, "Group": group_pop_tv}).fillna(0).reset_index()
+        df_demo_tv_melt = df_demo_tv.melt(id_vars="데모_구분", var_name="구분", value_name="시청인구")
+        
+        sort_map = {f"{d}대{'남' if g == 0 else '여'}": d*10 + g for d in range(1, 7) for g in range(2)}
+        df_demo_tv_melt["sort_key"] = df_demo_tv_melt["데모_구분"].map(sort_map).fillna(999)
+        df_demo_tv_melt = df_demo_tv_melt.sort_values("sort_key")
+
+        if not df_demo_tv_melt.empty:
+            fig_demo_tv = px.bar(
+                df_demo_tv_melt, x="데모_구분", y="시청인구", color="구분", barmode="group", 
+                text="시청인구", color_discrete_map={"IP": "#d93636", "Group": "#2a61cc"}
+            )
+            fig_demo_tv.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+            fig_demo_tv.update_layout(
+                height=350, yaxis_title="평균 시청인구", xaxis_title=None, 
+                margin=dict(t=20, b=0), 
+                legend=dict(title=None, orientation="h", yanchor="bottom", y=1.02)
+            )
+            st.plotly_chart(fig_demo_tv, use_container_width=True)
+        else: 
+            st.info("TV 데모 데이터 없음")
+
+    with col_demo_tving:
+        st.markdown(f"###### ▶️ TVING (평균 시청인구)")
+        tving_media = ["TVING LIVE", "TVING QUICK", "TVING VOD"]
+        ip_pop_tving = get_demo_avg_pop(df_ip, tving_media)
+        group_pop_tving = get_demo_avg_pop(df_group, tving_media)
+        df_demo_tving = pd.DataFrame({"IP": ip_pop_tving, "Group": group_pop_tving}).fillna(0).reset_index()
+        df_demo_tving_melt = df_demo_tving.melt(id_vars="데모_구분", var_name="구분", value_name="시청인구")
+        
+        df_demo_tving_melt["sort_key"] = df_demo_tving_melt["데모_구분"].map(sort_map).fillna(999)
+        df_demo_tving_melt = df_demo_tving_melt.sort_values("sort_key")
+
+        if not df_demo_tving_melt.empty:
+            fig_demo_tving = px.bar(
+                df_demo_tving_melt, x="데모_구분", y="시청인구", color="구분", barmode="group", 
+                text="시청인구", color_discrete_map={"IP": "#d93636", "Group": "#2a61cc"}
+            )
+            fig_demo_tving.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
+            fig_demo_tving.update_layout(
+                height=350, yaxis_title="평균 시청인구", xaxis_title=None, 
+                margin=dict(t=20, b=0), 
+                legend=dict(title=None, orientation="h", yanchor="bottom", y=1.02)
+            )
+            st.plotly_chart(fig_demo_tving, use_container_width=True)
+        else: 
+            st.info("TVING 데모 데이터 없음")
 
 # ===== [페이지 4] "IP vs IP" 렌더링 =====
 
@@ -2127,7 +1891,6 @@ def render_ip_vs_ip_comparison(df_all: pd.DataFrame, ip1: str, ip2: str, kpi_per
     kpis2 = get_agg_kpis_for_ip_page4(df2)
 
     # --- [수정] 1. 요약 KPI 카드 (두 줄로 복원) ---
-    # ◀◀◀ [수정] KPI 카드 영역은 컨테이너로 감싸지 않음
     st.markdown("#### 1. 주요 성과 요약")
     
     kpi_cols_1 = st.columns(4) # 7개 -> 4개 (첫 줄)
@@ -2146,94 +1909,87 @@ def render_ip_vs_ip_comparison(df_all: pd.DataFrame, ip1: str, ip2: str, kpi_per
     st.divider()
 
     # --- 2. 성과 시그니처 (Radar Chart) ---
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        st.markdown("#### 2. 성과 시그니처 (백분위 점수)")
-        
-        radar_metrics = ["T시청률", "H시청률", "TVING 라이브+QUICK", "TVING VOD", "디지털 조회수", "디지털 언급량"]
-        score1 = kpi_percentiles.loc[ip1][radar_metrics].reset_index().rename(columns={'index': 'metric', ip1: 'score'})
-        score1["IP"] = ip1
-        score2 = kpi_percentiles.loc[ip2][radar_metrics].reset_index().rename(columns={'index': 'metric', ip2: 'score'})
-        score2["IP"] = ip2
-        radar_data = pd.concat([score1, score2])
-        radar_data["metric_label"] = radar_data["metric"].replace({"T시청률": "타깃", "H시청률": "가구", "TVING 라이브+QUICK": "TVING L+Q", "TVING VOD": "TVING VOD", "디지털 조회수": "조회수", "디지털 언급량": "언급량"})
+    st.markdown("#### 2. 성과 시그니처 (백분위 점수)")
     
-        fig_radar = px.line_polar(radar_data, r="score", theta="metric_label", line_close=True, color="IP", 
-                                  color_discrete_map={ip1: "#d93636", ip2: "#2a61cc"}, range_r=[0, 100], markers=True)
-        fig_radar.update_layout(height=400, margin=dict(l=80, r=80, t=40, b=40))
-        st.plotly_chart(fig_radar, use_container_width=True)
+    radar_metrics = ["T시청률", "H시청률", "TVING 라이브+QUICK", "TVING VOD", "디지털 조회수", "디지털 언급량"]
+    score1 = kpi_percentiles.loc[ip1][radar_metrics].reset_index().rename(columns={'index': 'metric', ip1: 'score'})
+    score1["IP"] = ip1
+    score2 = kpi_percentiles.loc[ip2][radar_metrics].reset_index().rename(columns={'index': 'metric', ip2: 'score'})
+    score2["IP"] = ip2
+    radar_data = pd.concat([score1, score2])
+    radar_data["metric_label"] = radar_data["metric"].replace({"T시청률": "타깃", "H시청률": "가구", "TVING 라이브+QUICK": "TVING L+Q", "TVING VOD": "TVING VOD", "디지털 조회수": "조회수", "디지털 언급량": "언급량"})
+
+    fig_radar = px.line_polar(radar_data, r="score", theta="metric_label", line_close=True, color="IP", 
+                              color_discrete_map={ip1: "#d93636", ip2: "#2a61cc"}, range_r=[0, 100], markers=True)
+    fig_radar.update_layout(height=400, margin=dict(l=80, r=80, t=40, b=40))
+    st.plotly_chart(fig_radar, use_container_width=True)
     
     st.divider()
 
     # --- 3. 트렌드 격돌 (Line Charts) ---
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        st.markdown("#### 3. 트렌드 비교")
-        
-        c_trend1, c_trend2 = st.columns(2)
-        with c_trend1:
-            st.markdown("###### 📈 시청률 추이 (회차별)")
-            t_trend1 = df1[df1["metric"] == "T시청률"].groupby("회차_numeric")["value"].mean().rename("타깃")
-            h_trend1 = df1[df1["metric"] == "H시청률"].groupby("회차_numeric")["value"].mean().rename("가구")
-            t_trend2 = df2[df2["metric"] == "T시청률"].groupby("회차_numeric")["value"].mean().rename("타깃")
-            h_trend2 = df2[df2["metric"] == "H시청률"].groupby("회차_numeric")["value"].mean().rename("가구")
-            
-            fig_t = go.Figure()
-            fig_t.add_trace(go.Scatter(x=h_trend1.index, y=h_trend1.values, name=f"{ip1} (가구)", mode='lines+markers', line=dict(color="#d93636", dash="solid")))
-            fig_t.add_trace(go.Scatter(x=t_trend1.index, y=t_trend1.values, name=f"{ip1} (타깃)", mode='lines+markers', line=dict(color="#2a61cc", dash="solid")))
-            fig_t.add_trace(go.Scatter(x=h_trend2.index, y=h_trend2.values, name=f"{ip2} (가구)", mode='lines+markers', line=dict(color="#d93636", dash="dot")))
-            fig_t.add_trace(go.Scatter(x=t_trend2.index, y=t_trend2.values, name=f"{ip2} (타깃)", mode='lines+markers', line=dict(color="#2a61cc", dash="dot")))
-            fig_t.update_layout(height=300, yaxis_title="시청률 (%)", xaxis_title="회차", margin=dict(t=20, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02))
-            st.plotly_chart(fig_t, use_container_width=True)
+    st.markdown("#### 3. 트렌드 비교")
     
-        with c_trend2:
-            st.markdown("###### 🔥 화제성 순위 (주차별)")
-            f_trend1 = df1[df1["metric"] == "F_Total"].groupby("주차")["value"].min().reset_index(); f_trend1["IP"] = ip1
-            f_trend2 = df2[df2["metric"] == "F_Total"].groupby("주차")["value"].min().reset_index(); f_trend2["IP"] = ip2
-            f_trend_data = pd.concat([f_trend1, f_trend2])
-            
-            if not f_trend_data.empty:
-                fig_f = px.line(f_trend_data, x="주차", y="value", color="IP", title=None, markers=True, color_discrete_map={ip1: "#d93636", ip2: "#2a61cc"})
-                fig_f.update_layout(height=300, yaxis_title="화제성 순위", yaxis=dict(autorange="reversed"), margin=dict(t=20, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02))
-                st.plotly_chart(fig_f, use_container_width=True)
-            else: 
-                st.info("화제성 트렌드 데이터가 없습니다.")
+    c_trend1, c_trend2 = st.columns(2)
+    with c_trend1:
+        st.markdown("###### 📈 시청률 추이 (회차별)")
+        t_trend1 = df1[df1["metric"] == "T시청률"].groupby("회차_numeric")["value"].mean().rename("타깃")
+        h_trend1 = df1[df1["metric"] == "H시청률"].groupby("회차_numeric")["value"].mean().rename("가구")
+        t_trend2 = df2[df2["metric"] == "T시청률"].groupby("회차_numeric")["value"].mean().rename("타깃")
+        h_trend2 = df2[df2["metric"] == "H시청률"].groupby("회차_numeric")["value"].mean().rename("가구")
+        
+        fig_t = go.Figure()
+        fig_t.add_trace(go.Scatter(x=h_trend1.index, y=h_trend1.values, name=f"{ip1} (가구)", mode='lines+markers', line=dict(color="#d93636", dash="solid")))
+        fig_t.add_trace(go.Scatter(x=t_trend1.index, y=t_trend1.values, name=f"{ip1} (타깃)", mode='lines+markers', line=dict(color="#2a61cc", dash="solid")))
+        fig_t.add_trace(go.Scatter(x=h_trend2.index, y=h_trend2.values, name=f"{ip2} (가구)", mode='lines+markers', line=dict(color="#d93636", dash="dot")))
+        fig_t.add_trace(go.Scatter(x=t_trend2.index, y=t_trend2.values, name=f"{ip2} (타깃)", mode='lines+markers', line=dict(color="#2a61cc", dash="dot")))
+        fig_t.update_layout(height=300, yaxis_title="시청률 (%)", xaxis_title="회차", margin=dict(t=20, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02))
+        st.plotly_chart(fig_t, use_container_width=True)
+
+    with c_trend2:
+        st.markdown("###### 🔥 화제성 순위 (주차별)")
+        f_trend1 = df1[df1["metric"] == "F_Total"].groupby("주차")["value"].min().reset_index(); f_trend1["IP"] = ip1
+        f_trend2 = df2[df2["metric"] == "F_Total"].groupby("주차")["value"].min().reset_index(); f_trend2["IP"] = ip2
+        f_trend_data = pd.concat([f_trend1, f_trend2])
+        
+        if not f_trend_data.empty:
+            fig_f = px.line(f_trend_data, x="주차", y="value", color="IP", title=None, markers=True, color_discrete_map={ip1: "#d93636", ip2: "#2a61cc"})
+            fig_f.update_layout(height=300, yaxis_title="화제성 순위", yaxis=dict(autorange="reversed"), margin=dict(t=20, b=0), legend=dict(orientation="h", yanchor="bottom", y=1.02))
+            st.plotly_chart(fig_f, use_container_width=True)
+        else: 
+            st.info("화제성 트렌드 데이터가 없습니다.")
             
     st.divider()
 
     # --- 4. 타깃 데모 비교 (Grouped Bar Chart) ---
-    # ◀◀◀ [수정] 차트/테이블 영역만 컨테이너 추가
-    with st.container(border=True):
-        st.markdown("#### 4. TV 시청자 데모 비교 (TV 시청인구 비중)")
+    st.markdown("#### 4. TV 시청자 데모 비교 (TV 시청인구 비중)")
+    
+    demo1 = df1[(df1["metric"] == "시청인구") & (df1["매체"] == "TV") & (df1["데모"].notna())]
+    demo2 = df2[(df2["metric"] == "시청인구") & (df2["매체"] == "TV") & (df2["데모"].notna())]
+    
+    def prep_demo_data(df_demo, ip_name):
+        df_demo["연령대_대"] = df_demo["데모"].apply(_to_decade_label)
+        df_demo = df_demo[df_demo["연령대_대"] != "기타"]
+        agg = df_demo.groupby("연령대_대")["value"].sum()
+        total = agg.sum()
+        return pd.DataFrame({"연령대": agg.index, "비중": (agg / total * 100) if total > 0 else agg, "IP": ip_name})
         
-        demo1 = df1[(df1["metric"] == "시청인구") & (df1["매체"] == "TV") & (df1["데모"].notna())]
-        demo2 = df2[(df2["metric"] == "시청인구") & (df2["매체"] == "TV") & (df2["데모"].notna())]
-        
-        def prep_demo_data(df_demo, ip_name):
-            df_demo["연령대_대"] = df_demo["데모"].apply(_to_decade_label)
-            df_demo = df_demo[df_demo["연령대_대"] != "기타"]
-            agg = df_demo.groupby("연령대_대")["value"].sum()
-            total = agg.sum()
-            return pd.DataFrame({"연령대": agg.index, "비중": (agg / total * 100) if total > 0 else agg, "IP": ip_name})
-            
-        demo_agg1 = prep_demo_data(demo1, ip1)
-        demo_agg2 = prep_demo_data(demo2, ip2)
-        demo_data_grouped = pd.concat([demo_agg1, demo_agg2])
-        all_decades = sorted(demo_data_grouped["연령대"].unique(), key=_decade_key)
-        
-        fig_demo = px.bar(demo_data_grouped, x="연령대", y="비중", color="IP", barmode="group", 
-                          text="비중", color_discrete_map={ip1: "#d93636", ip2: "#2a61cc"}, 
-                          category_orders={"연령대": all_decades})
-        fig_demo.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
-        fig_demo.update_layout(height=350, margin=dict(t=20, b=20, l=20, r=20), 
-                               yaxis_title="시청 비중 (%)", xaxis_title="연령대", 
-                               legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
-        st.plotly_chart(fig_demo, use_container_width=True)
+    demo_agg1 = prep_demo_data(demo1, ip1)
+    demo_agg2 = prep_demo_data(demo2, ip2)
+    demo_data_grouped = pd.concat([demo_agg1, demo_agg2])
+    all_decades = sorted(demo_data_grouped["연령대"].unique(), key=_decade_key)
+    
+    fig_demo = px.bar(demo_data_grouped, x="연령대", y="비중", color="IP", barmode="group", 
+                      text="비중", color_discrete_map={ip1: "#d93636", ip2: "#2a61cc"}, 
+                      category_orders={"연령대": all_decades})
+    fig_demo.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+    fig_demo.update_layout(height=350, margin=dict(t=20, b=20, l=20, r=20), 
+                           yaxis_title="시청 비중 (%)", xaxis_title="연령대", 
+                           legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    st.plotly_chart(fig_demo, use_container_width=True)
 
 # ===== [페이지 4] 메인 렌더링 함수 =====
 def render_comparison():
-    # ◀◀◀ [수정] load_data() 호출 방식 변경
-    df_all = load_data()
+    df_all = load_data(CSV_URL)
     try: 
         kpi_percentiles = get_kpi_data_for_all_ips(df_all)
     except Exception as e: 
@@ -2241,7 +1997,6 @@ def render_comparison():
         kpi_percentiles = pd.DataFrame() 
 
     # --- [수정] 필터 메인 영역으로 이동 ---
-    # ◀◀◀ [수정] 필터 영역은 컨테이너로 감싸지 않음
     filter_cols = st.columns([3, 2, 3, 3]) # [Title, Mode, IP1, IP2/Group]
     ip_options = sorted(df_all["IP"].dropna().unique().tolist())
     selected_ip1 = None
@@ -2440,8 +2195,7 @@ def plot_episode_comparison(
 def render_episode():
     
     # --- 데이터 로드 ---
-    # ◀◀◀ [수정] load_data() 호출 방식 변경
-    df_all = load_data()
+    df_all = load_data(CSV_URL)
     
     # --- [수정] 필터 메인 영역으로 이동 ---
     filter_cols = st.columns([3, 3, 2]) # [Title | Base IP | Episode]
@@ -2578,8 +2332,7 @@ def render_growth_score():
         작품명은 줄바꿈 적용(한 줄 한 작품), 가로/세로 패딩 최소화, 세로 길이 확대
       - 전체표 정렬: 종합의 '절대등급' 우선 내림차순, 동률 시 '상승등급' 높은 순
     """
-    # ◀◀◀ [수정] load_data() 호출 방식 변경
-    df_all = load_data().copy()
+    df_all = load_data(CSV_URL).copy()
 
     # ---------- 설정 ----------
     EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
@@ -3028,8 +2781,8 @@ def render_growth_score():
       if (v.startsWith('S')) { bg='rgba(0,91,187,0.14)'; color='#003d80'; }
       else if (v.startsWith('A')) { bg='rgba(0,91,187,0.08)'; color='#004a99'; }
       else if (v.startsWith('B')) { bg='rgba(0,0,0,0.03)'; color:'#333'; fw='600'; }
-      else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color='#2a61cc'; }
-      else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color='#1a44a3'; }
+      else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color:'#2a61cc'; }
+      else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color:'#1a44a3'; }
       return {'background-color':bg,'color':color,'font-weight':fw,'text-align':'center'};
     }""")
 
@@ -3075,8 +2828,7 @@ def render_growth_score_digital():
     from plotly import graph_objects as go
     import streamlit as st
 
-    # ◀◀◀ [수정] load_data() 호출 방식 변경
-    df_all = load_data().copy()
+    df_all = load_data(CSV_URL).copy()
 
     # ---------- 설정 ----------
     EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
@@ -3465,8 +3217,8 @@ def render_growth_score_digital():
       if (v.startsWith('S')) { bg='rgba(0,91,187,0.14)'; color='#003d80'; }
       else if (v.startsWith('A')) { bg='rgba(0,91,187,0.08)'; color='#004a99'; }
       else if (v.startsWith('B')) { bg='rgba(0,0,0,0.03)'; color:'#333'; fw='600'; }
-      else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color='#2a61cc'; }
-      else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color='#1a44a3'; }
+      else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color:'#2a61cc'; }
+      else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color:'#1a44a3'; }
       return {'background-color':bg,'color':color,'font-weight':fw,'text-align':'center'};
     }""")
 
@@ -3513,5 +3265,3 @@ else:
     st.write("페이지를 찾을 수 없습니다.")
 
 #endregion
-
-
