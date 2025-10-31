@@ -25,11 +25,6 @@ from google.oauth2.service_account import Credentials
 # ◀◀◀ [수정] 페이지 설정 원본 유지
 st.set_page_config(page_title="Overview Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-# ===== ◀◀◀ [삭제] 구글 시트 URL =====
-# (Streamlit Secrets를 통해 로드하므로 원본 CSV_URL 변수들 제거)
-# SHEET_ID = "..."
-# GID = "..."
-# CSV_URL = "..."
 
 # ===== 네비게이션 아이템 정의 (v2.0) =====
 NAV_ITEMS = {
