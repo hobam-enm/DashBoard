@@ -242,8 +242,8 @@ st.markdown("""
 div[data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #ffffff;
     border: 1px solid #e9e9e9;
-    border-radius: 10px;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.03);
+    border-radius: 0px;
+    box-shadow: 0 ;
     padding: 1.25rem 1.25rem 1.5rem 1.25rem; /* 20px 20px 25px 20px */
     margin-bottom: 1.5rem; /* 카드 간 세로 간격 */
 }
