@@ -241,7 +241,7 @@ st.markdown("""
 /* --- ◀◀◀ [수정] st.container(border=True) 스타일 오버라이드 --- */
 div[data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #ffffff;
-    border: 1px solid #e9e9e9;
+    border: 0px solid #e9e9e9;
     border-radius: 10px;
     box-shadow: 0 2px 5px rgba(0,0,0,0.03);
     padding: 1.25rem 1.25rem 1.5rem 1.25rem; /* 20px 20px 25px 20px */
