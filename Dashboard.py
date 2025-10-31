@@ -46,6 +46,33 @@ pio.templates.default = "plotly_white"
 # 공통 상수 (예: 사이드바 폭, 네비 등 기존 값들이 있다면 여기 유지)
 SIDEBAR_WIDTH = 300
 #endregion
+#region [ 2-1. 부트 가드 (초기 점검) ]
+# =====================================================
+# 초기 단계에서 어디서 실패하는지 바로 화면에 띄워주는 가드 유틸
+st.sidebar.write("🔍 **Boot check**")
+st.sidebar.write(f"Python: {platform.python_version()}")
+st.sidebar.write(f"Working dir: {os.getcwd()}")
+
+def _guard(label: str, fn):
+    """
+    label 단계에서 예외가 나면 UI에 즉시 표시하고 st.stop()으로 진행 중단.
+    """
+    try:
+        st.sidebar.write(f"⏳ {label}…")
+        v = fn()
+        st.sidebar.write(f"✅ {label} OK")
+        return v
+    except Exception as e:
+        st.sidebar.error(f"❌ {label} 실패: {e.__class__.__name__}: {e}")
+        st.exception(e)  # 전체 Traceback 본문 출력
+        st.stop()
+
+# 필수 시크릿 존재 확인
+_guard("secrets[gcp_service_account].client_email", lambda: st.secrets["gcp_service_account"]["client_email"])
+_guard("SHEET_ID", lambda: SHEET_ID if SHEET_ID else (_ for _ in ()).throw(ValueError("SHEET_ID 누락")))
+_guard("GID_OR_NAME", lambda: GID_OR_NAME if GID_OR_NAME else (_ for _ in ()).throw(ValueError("GID/RAW_WORKSHEET 누락")))
+#endregion
+
 #region [ 2-2. 라우팅/네비 유틸 ]
 # =====================================================
 # URL ?page=... 쿼리파라미터로 현재 페이지를 결정/유지
