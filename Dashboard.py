@@ -75,72 +75,80 @@ _guard("GID_OR_NAME", lambda: GID_OR_NAME if GID_OR_NAME else (_ for _ in ()).th
 
 #region [ 2-2. 라우팅/네비 유틸 ]
 # =====================================================
-"""
-- URL 쿼리 파라미터 ?page=... 로 현재 페이지를 결정/유지
-- 사이드바 네비게이션 버튼 클릭 시 쿼리 파라미터를 갱신하고 rerun
-- Streamlit 버전에 따라 st.query_params 가 dict-like이므로 방어 코딩
-"""
+# URL ?page=... 쿼리파라미터로 현재 페이지를 결정/유지
+# - 사이드바 네비 클릭 시 쿼리파라미터 갱신 후 rerun
+# - Streamlit 버전별(st.query_params / experimental_get/set_query_params) 호환
+# - 이 리전에서 NAV_ITEMS / get_current_page_default / goto_page 를 정의
+# =====================================================
+from collections import OrderedDict
 
-from typing import List
+# 네비게이션 항목(사이드바 1단계)
+NAV_ITEMS: "OrderedDict[str, str]" = OrderedDict([
+    ("Overview",   "Overview"),
+    ("IP 성과",    "IP 성과"),
+    ("데모그래픽", "데모그래픽"),
+    ("비교분석",   "비교분석"),
+    ("회차별",     "회차별"),
+])
 
-def get_current_page_default(default_page: str = "Overview") -> str:
-    """
-    URL 쿼리 파라미터 'page'가 있으면 그 값을, 없으면 default_page 반환.
-    Streamlit의 st.query_params는 dict-like. 값이 list로 들어올 수도 있어 방어 처리.
-    """
+def _qp_get_all() -> dict:
+    """쿼리파라미터를 dict로 반환 (버전 호환)."""
     try:
-        qp = st.query_params  # dict-like
-        page = qp.get("page", default_page)
-        if isinstance(page, list):
-            page = page[0] if page else default_page
-        page = (page or "").strip()
-        return page if page else default_page
+        # Streamlit 1.30+
+        qp = getattr(st, "query_params", None)
+        if qp is not None:
+            # dict-like
+            d = dict(qp)
+            # 값이 리스트이면 첫 값만 사용
+            return {k: (v[0] if isinstance(v, list) else v) for k, v in d.items()}
     except Exception:
-        return default_page
-
-
-def set_current_page(page: str) -> None:
-    """
-    현재 페이지를 쿼리 파라미터로 반영.
-    """
+        pass
     try:
-        st.query_params["page"] = page
+        # 구버전
+        d = st.experimental_get_query_params()
+        return {k: (v[0] if isinstance(v, list) else v) for k, v in d.items()}
     except Exception:
-        # 일부 구버전 호환 혹은 실패 시 무시
+        return {}
+
+def _qp_set_all(update_dict: dict) -> None:
+    """쿼리파라미터를 통째로 설정 (버전 호환)."""
+    try:
+        # 최신 방식: 전체 재할당 가능
+        if hasattr(st, "query_params"):
+            try:
+                st.query_params.clear()
+                for k, v in update_dict.items():
+                    st.query_params[k] = v
+                return
+            except Exception:
+                try:
+                    st.query_params = update_dict
+                    return
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    # 구버전 fallback
+    try:
+        st.experimental_set_query_params(**update_dict)
+    except Exception:
         pass
 
-
-def render_sidebar_nav(pages: List[str], current: str) -> None:
+def get_current_page_default(default_page: str = "Overview") -> str:
+    """현재 ?page 값(없으면 기본값)을 안전하게 반환.
+    - NAV_ITEMS 이외의 값이라도 그대로 허용 (성장스코어 등 추가 페이지 라우팅 지원)
+    - 공백/빈값이면 기본값 반환
     """
-    사이드바 네비게이션 렌더링.
-    현재 페이지는 ▶ 표시, 그 외는 • 표시로 구분. 클릭 시 쿼리파라미터 갱신 후 rerun.
-    """
-    with st.sidebar:
-        st.markdown("### 📚 Navigation")
-        for p in pages:
-            label = ("▶ " if p == current else "• ") + p
-            if st.button(label, key=f"nav_{p}"):
-                set_current_page(p)
-                st.rerun()
+    qp = _qp_get_all()
+    page = str(qp.get("page", "")).strip() or default_page
+    return page
 
-
-def route_and_render(pages: List[str], page_renderers: dict) -> None:
-    """
-    간편 라우팅 헬퍼:
-      - pages: 페이지명 리스트 (사이드바 버튼 노출 순서)
-      - page_renderers: {"Overview": render_overview, ...} 형태
-    """
-    current = get_current_page_default(pages[0] if pages else "Overview")
-    render_sidebar_nav(pages, current)
-
-    # 존재하지 않는 page가 들어온 경우 첫 페이지로 폴백
-    renderer = page_renderers.get(current) or page_renderers.get(pages[0])
-    if renderer is None:
-        st.error("렌더러가 정의되지 않았습니다.")
-        return
-
-    st.markdown(f"## {current}")
-    renderer()
+def goto_page(new_page: str) -> None:
+    """?page 를 new_page 로 바꾸고 즉시 rerun."""
+    qp = _qp_get_all()
+    qp["page"] = new_page
+    _qp_set_all(qp)
+    st.rerun()
 
 # =====================================================
 #endregion
