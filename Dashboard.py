@@ -166,6 +166,20 @@ def fmt(v, digits=3, intlike=False):
         return "–"
     return f"{v:,.0f}" if intlike else f"{v:.{digits}f}"
 
+
+def fmt_eokman(n):
+    """정수 n을 '#억####만' 형식으로 (만 이하 절삭) 표현"""
+    if n is None or pd.isna(n):
+        return "–"
+    try:
+        n = int(float(n))
+    except Exception:
+        return "–"
+    eok = n // 100_000_000
+    man = (n % 100_000_000) // 10_000
+    return f"{eok}억{man:04d}만"
+
+
 # ===== KPI 카드 렌더링 유틸 =====
 def kpi(col, title, value):
     """
@@ -410,6 +424,21 @@ h4 { /* 페이지 내 부제목 (예: 주요 작품 성과) */
 hr {
     margin: 1.5rem 0; /* 상하 여백 증가 */
     background-color: #e0e0e0;
+}
+
+/* === Box exceptions for KPI, titles, and filters === */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpi-card),
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.page-title),
+div[data-testid="stVerticalBlockBorderWrapper"]:has(div[data-testid="stSelectbox"]),
+div[data-testid="stVerticalBlockBorderWrapper"]:has(div[data-testid="stMultiSelect"]),
+div[data-testid="stVerticalBlockBorderWrapper"]:has(div[data-testid="stSlider"]),
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.filter-group)
+{
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+    margin-bottom: 0.5rem !important;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -698,7 +727,7 @@ def render_overview():
     filter_cols = st.columns(4) # [제목 | 편성필터 | 연도필터 | 월필터]
     
     with filter_cols[0]:
-        st.markdown("### 📊 Overview")
+        st.markdown("<div class='page-title'>### 📊 Overview</div>", unsafe_allow_html=True)
     
     with filter_cols[1]:
         prog_sel = st.multiselect(
@@ -915,7 +944,7 @@ def render_ip_detail():
     filter_cols = st.columns([3, 2, 2]) # [제목 | IP선택 | 그룹기준]
     
     with filter_cols[0]:
-        st.markdown("### 📈 IP 성과 자세히보기")
+        st.markdown("<div class='page-title'>### 📈 IP 성과 자세히보기</div>", unsafe_allow_html=True)
 
     ip_options = sorted(df_full["IP"].dropna().unique().tolist())
     with filter_cols[1]:
@@ -1072,7 +1101,7 @@ def render_ip_detail():
 
     def sublines_html(prog_label: str, rank_tuple: tuple, val, base_val):
         rnk, total = rank_tuple if rank_tuple else (None, 0)
-        rank_html = "<span class='kpi-sublabel'>{} 內</span> <span class='kpi-substrong'>{}</span>".format(
+        rank_html = "<span class='kpi-sublabel'>그룹 內</span> <span class='kpi-substrong'>{}</span>".format((f\"{rnk}위\" if (rnk is not None and total>0) else "–위")).format(
             prog_label.replace(" 평균", ""), (f"{rnk}위" if (rnk is not None and total>0) else "–위")
         )
         if val is None or pd.isna(val) or base_val in (None,0) or pd.isna(base_val):
@@ -1080,7 +1109,7 @@ def render_ip_detail():
         else:
             pct = (val / base_val) * 100
             pct_txt = f"{pct:.0f}%"; col = _pct_color(val, base_val)
-        pct_html = "<span class='kpi-sublabel'>{} 대비</span> <span class='kpi-subpct' style='color:{};'>{}</span>".format(
+        pct_html = "<span class='kpi-sublabel'>그룹 평균比</span> <span class='kpi-subpct' style='color:{};'>{}</span>".format(col, pct_txt).format(
             prog_label, col, pct_txt
         )
         return f"<div class='kpi-subwrap'>{rank_html}<br/>{pct_html}</div>"
