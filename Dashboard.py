@@ -28,187 +28,86 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 # =====================================================
 st.set_page_config(page_title="Overview Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-# ===== 구글 시트 URL =====
+# ===== 구글 시트 URL (시크릿 → 안전 조합) =====
+SHEET_ID = str(st.secrets.get("SHEET_ID", "1fKVPXGN-R2bsrv018dz8zTmg431ZSBHx1PCTnMpdoWY")).strip()
+GID      = str(st.secrets.get("GID", "407131354")).strip()  # RAW_원본
 
-# ===== 구글 시트 URL (Cloud-ready with secrets) =====
-def _build_csv_url(sheet_id: str, gid: str) -> str:
-    return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+# URL을 항상 ASCII로 정규화해서 생성
+from urllib.parse import urlsplit, urlunsplit, quote, urlencode
 
-# Prefer Streamlit Cloud secrets; fall back to hard-coded defaults for local dev
-_SHEET_ID_DEFAULT = "1fKVPXGN-R2bsrv018dz8zTmg431ZSBHx1PCTnMpdoWY"
-_GID_DEFAULT = "407131354"  # RAW_원본
+_base  = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export"
+_path  = urlsplit(_base).path                     # /spreadsheets/d/<id>/export
+_path  = quote(_path, safe="/")                   # path 내 비ASCII 방지
+_query = urlencode({"format": "csv", "gid": str(GID)}, doseq=True)
+CSV_URL = urlunsplit(("https", "docs.google.com", _path, _query, "")).strip()
 
-SHEET_ID = (st.secrets.get("SHEET_ID") if hasattr(st, "secrets") else None) or _SHEET_ID_DEFAULT
-GID = (st.secrets.get("GID") if hasattr(st, "secrets") else None) or _GID_DEFAULT
-
-# Allow full override if you set CSV_URL in secrets
-CSV_URL = (st.secrets.get("CSV_URL") if hasattr(st, "secrets") else None) or _build_csv_url(SHEET_ID, GID)
-
-# ===== 네비게이션 아이템 정의 (v2.0) =====
-NAV_ITEMS = {
-    "Overview": "📊 Overview",
-    "IP 성과": "📈 IP 성과 자세히보기",
-    "데모그래픽": "👥 IP 오디언스 히트맵",
-    "비교분석": "⚖️ IP간 비교분석",
-    "성장스코어-방영지표": "🚀 성장스코어-방영지표",
-    "성장스코어-디지털": "🛰️ 성장스코어-디지털",
-    "회차별": "🎬 회차별 비교",
-}
-
-# ===== 데모 컬럼 순서 (페이지 2, 3에서 공통 사용) =====
-DECADES = ["10대","20대","30대","40대","50대","60대"]
-DEMO_COLS_ORDER = [f"{d}남성" for d in DECADES] + [f"{d}여성" for d in DECADES]
-
-# ===== ◀◀◀ [신규] Plotly 공통 테마 (아이디어 #3) =====
-dashboard_theme = go.Layout(
-    paper_bgcolor='rgba(0,0,0,0)',  # 카드 배경과 동일하게 투명
-    plot_bgcolor='rgba(0,0,0,0)',   # 차트 내부 배경 투명
-    font=dict(family='sans-serif', size=12, color='#333333'),
-    title=dict(font=dict(size=16, color="#111"), x=0.05),
-    legend=dict(
-        orientation='h',
-        yanchor='bottom',
-        y=1.02,
-        xanchor='right',
-        x=1,
-        bgcolor='rgba(0,0,0,0)'
-    ),
-    margin=dict(l=20, r=20, t=50, b=20), # 기본 마진
-    xaxis=dict(
-        showgrid=False, 
-        zeroline=True, 
-        zerolinecolor='#e0e0e0', 
-        zerolinewidth=1
-    ),
-    yaxis=dict(
-        showgrid=True, 
-        gridcolor='#f0f0f0', # 매우 연한 그리드
-        zeroline=True, 
-        zerolinecolor='#e0e0e0'
-    ),
-    # 테마 색상 (Plotly 기본값 사용. 필요시 주석 해제)
-    # colorway=px.colors.qualitative.Plotly 
-)
-# ◀◀◀ [수정] go.Layout 객체를 go.layout.Template으로 감싸서 등록
-pio.templates['dashboard_theme'] = go.layout.Template(layout=dashboard_theme)
-pio.templates.default = 'dashboard_theme'
-# =====================================================
+# 선택: 디버그 표시 (필요 시 True)
+DEBUG_SHOW_URL = bool(st.secrets.get("DEBUG_SHOW_URL", False))
+if DEBUG_SHOW_URL:
+    st.caption(f"CSV_URL = {CSV_URL}")
 #endregion
 
-#region [ 3. 공통 함수: 데이터 로드 / 유틸리티 ]
+#region [ 3. 공통 함수 / 로딩 ]
 # =====================================================
-
-# ===== 데이터 로드 (캐싱) =====
 @st.cache_data(ttl=600)
 def load_data(url: str) -> pd.DataFrame:
     """
-    구글 시트 CSV URL에서 데이터를 로드하고 기본 전처리를 수행합니다.
+    1) URL을 ASCII로 정규화한 뒤 read_csv
+    2) 실패 시 requests.get → StringIO 폴백
+    3) 날짜/숫자/문자 기본 전처리
     """
-    df = pd.read_csv(url)
+    import io, numpy as np, pandas as pd, requests
+    from urllib.parse import urlsplit, urlunsplit, quote, urlencode, parse_qsl
+
+    def _safe_url(u: str) -> str:
+        parts = urlsplit(str(u).strip())
+        safe_path = quote(parts.path, safe="/")
+        q = urlencode(parse_qsl(parts.query, keep_blank_values=True), doseq=True)
+        return urlunsplit((parts.scheme or "https", parts.netloc, safe_path, q, ""))
+
+    safe = _safe_url(url)
+
+    # 시도 1: pandas 직접 로드
+    try:
+        df = pd.read_csv(safe)
+    except Exception:
+        # 시도 2: requests 폴백
+        resp = requests.get(safe, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        resp.raise_for_status()
+        content = resp.content
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("utf-8-sig", errors="replace")
+        df = pd.read_csv(io.StringIO(text))
 
     # --- 날짜 파싱 ---
     if "주차시작일" in df.columns:
-        df["주차시작일"] = pd.to_datetime(
-            df["주차시작일"].astype(str).str.strip(),
-            format="%Y. %m. %d",
-            errors="coerce"
-        )
+        df["주차시작일"] = pd.to_datetime(df["주차시작일"].astype(str).str.strip(), format="%Y. %m. %d", errors="coerce")
     if "방영시작일" in df.columns:
-        df["방영시작일"] = pd.to_datetime(
-            df["방영시작일"].astype(str).str.strip(),
-            format="%Y. %m. %d",
-            errors="coerce"
-        )
+        df["방영시작일"] = pd.to_datetime(df["방영시작일"].astype(str).str.strip(), format="%Y. %m. %d", errors="coerce")
 
-    # --- 숫자형 데이터 변환 ---
+    # --- 숫자형 변환 ---
     if "value" in df.columns:
-        v = df["value"].astype(str).str.replace(",", "", regex=False).str.replace("%", "", regex=False)
+        v = (df["value"].astype(str)
+                     .str.replace(",", "", regex=False)
+                     .str.replace("%", "", regex=False))
         df["value"] = pd.to_numeric(v, errors="coerce").fillna(0)
 
-    # --- 문자열 데이터 정제 ---
-    for c in ["IP", "편성", "지표구분", "매체", "데모", "metric", "회차", "주차"]:
+    # --- 문자열 정제 ---
+    for c in ["IP","편성","지표구분","매체","데모","metric","회차","주차"]:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
 
-    # --- 파생 컬럼 생성 ---
+    # --- 파생 컬럼 ---
     if "회차" in df.columns:
         df["회차_numeric"] = df["회차"].str.extract(r"(\d+)", expand=False).astype(float)
     else:
         df["회차_numeric"] = pd.NA
 
     return df
-
-# ===== 일반 포맷팅 유틸 =====
-def fmt(v, digits=3, intlike=False):
-    """
-    숫자 포맷팅 헬퍼 (None이나 NaN은 '–'로 표시)
-    """
-    if v is None or pd.isna(v):
-        return "–"
-    return f"{v:,.0f}" if intlike else f"{v:.{digits}f}"
-
-# ===== KPI 카드 렌더링 유틸 =====
-def kpi(col, title, value):
-    """
-    Streamlit 컬럼 내에 KPI 카드를 렌더링합니다.
-    """
-    with col:
-        st.markdown(
-            f'<div class="kpi-card"><div class="kpi-title">{title}</div>'
-            f'<div class="kpi-value">{value}</div></div>',
-            unsafe_allow_html=True
-        )
-
-# ===== 페이지 라우팅 유틸 =====
-def get_current_page_default(default="Overview"):
-    """
-    URL 쿼리 파라미터(?page=...)에서 현재 페이지를 읽어옵니다.
-    없으면 default 값을 반환합니다.
-    """
-    try:
-        qp = st.query_params  # Streamlit 신버전
-        p = qp.get("page", None)
-        if p is None:
-            return default
-        return p if isinstance(p, str) else p[0]
-    except Exception:
-        qs = st.experimental_get_query_params()  # 구버전 호환
-        return (qs.get("page", [default])[0])
-
-# ===== 회차 옵션 생성 유틸 (페이지 5) =====
-def get_episode_options(df: pd.DataFrame) -> List[str]:
-    """데이터에서 사용 가능한 회차 목록 (문자열, '00' 제외, '차'/'화' 제거)을 추출합니다."""
-    
-    valid_options = []
-    # 숫자 회차 컬럼 우선 사용
-    if "회차_numeric" in df.columns:
-        unique_episodes_num = sorted([
-            int(ep) for ep in df["회차_numeric"].dropna().unique() if ep > 0 # 0보다 큰 경우만
-        ])
-        if unique_episodes_num:
-            max_ep_num = unique_episodes_num[-1]
-            for ep_num in unique_episodes_num: valid_options.append(str(ep_num))
-            # 마지막 회차 처리
-            last_ep_str_num = str(max_ep_num)
-            if last_ep_str_num in valid_options and valid_options[-1] != last_ep_str_num:
-                 valid_options.remove(last_ep_str_num); valid_options.append(last_ep_str_num)
-            if len(valid_options) > 0 and "(마지막화)" not in valid_options[-1]:
-                 valid_options[-1] = f"{valid_options[-1]} (마지막화)"
-            return valid_options
-        else: return []
-    # 숫자 회차 컬럼 없을 경우
-    elif "회차" in df.columns:
-        raw_options = sorted(df["회차"].dropna().unique())
-        for opt in raw_options:
-            # '00'으로 시작하는 것 제외
-            if not opt.startswith("00"):
-                cleaned_opt = re.sub(r"[화차]", "", opt) # '화' 또는 '차' 제거
-                if cleaned_opt.isdigit() and int(cleaned_opt) > 0: 
-                    valid_options.append(cleaned_opt)
-        # 숫자 기준으로 정렬
-        return sorted(list(set(valid_options)), key=lambda x: int(x) if x.isdigit() else float('inf')) 
-    else: return []
 #endregion
+
 
 #region [ 4. 공통 스타일 ]
 # =====================================================
