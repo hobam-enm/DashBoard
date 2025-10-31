@@ -229,192 +229,122 @@ def get_episode_options(df: pd.DataFrame) -> List[str]:
     else: return []
 #endregion
 
-#region [ 4. 공통 스타일 ]
+#region [ 4. Global CSS & UI Theme ] 
 # =====================================================
-# CSS 수정: 전체적인 색상 톤, 폰트, 카드 디자인을 더 세련되게 변경
+import streamlit as st
+
 st.markdown("""
 <style>
-/* --- 전체 앱 배경 --- */
-[data-testid="stAppViewContainer"] {
-    background-color: #f8f9fa; /* 매우 연한 회색 배경 */
-}
-/* --- ◀◀◀ [수정] st.container(border=True) 스타일 오버라이드 --- */
-div[data-testid="stVerticalBlockBorderWrapper"] {
-    background-color: #ffffff;
-    border: 0px solid #e9e9e9;
-    border-radius: 0px;
-    box-shadow: 0;
-    padding: 1.25rem 1.25rem 1.5rem 1.25rem; /* 20px 20px 25px 20px */
-    margin-bottom: 1.5rem; /* 카드 간 세로 간격 */
+:root{
+  --page-max: 1500px;
+  --gap: 16px;
+  --radius: 14px;
+  --pad: 18px;
+  --muted: rgba(0,0,0,.65);
+  --soft:  rgba(0,0,0,.06);
 }
 
-
-/* --- Sidebar 배경/패딩 + 항상 펼침(폭 고정) --- */
-section[data-testid="stSidebar"] {
-    background: #ffffff; /* 흰색 배경 */
-    border-right: 1px solid #e0e0e0; /* 연한 경계선 */
-    padding-top: 1rem;
-    padding-left: 0.5rem;
-    padding-right: 0.5rem;
-    min-width:300px !important;
-    max-width:300px !important;
-}
-/* 사이드바 접힘 토글 버튼 숨김 */
-div[data-testid="collapsedControl"] { display:none !important; }
-
-/* --- 로고 --- */
-.sidebar-logo{
-    font-size: 28px; /* 크기 살짝 조정 */
-    font-weight: 700; 
-    color: #1a1a1a; /* 더 진한 검은색 */
-    text-align: center; 
-    margin-bottom: 10px;
-    padding-top: 10px;
+/* 0) 페이지 컨테이너 폭 & 기본 여백 */
+.main .block-container{
+  max-width: var(--page-max);
+  padding-left: 1rem;
+  padding-right: 1rem;
 }
 
-/* --- 네비게이션 아이템 --- */
-.nav-item{
-    display: block;
-    width: 100%;
-    padding: 12px 15px; /* 패딩 조정 */
-    color: #333 !important; /* 기본 텍스트 색상 */
-    background: #f1f3f5; /* 연한 회색 배경 */
-    text-decoration: none !important;
-    font-weight: 600; /* 폰트 굵기 */
-    border-radius: 8px; /* 둥근 모서리 */
-    margin-bottom: 5px; /* 아이템간 간격 */
-    text-align: center;
-    transition: background-color 0.2s ease, color 0.2s ease;
+/* 1) 헤더/타이틀 */
+h1,h2,h3{ letter-spacing: .2px; }
+
+/* 2) 뉴트럴 박스(보더/쉐도우 0) */
+.box-plain{
+  background: var(--background-color);
+  border: 0 !important;
+  box-shadow: none !important;
+  border-radius: var(--radius);
+  padding: var(--pad) calc(var(--pad) + 2px);
+  margin: 8px 0;
 }
-.nav-item:hover{
-    background: #e9ecef; /* 호버 시 더 진한 회색 */
-    color: #000 !important;
-    text-decoration: none;
+.divider-ghost{ height: 10px; }
+
+/* 3) KPI 그리드 & 카드 */
+.kpi-wrap{
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); /* 최소폭 보장 */
+  gap: var(--gap);
+  margin-top: 6px;
 }
-.active{
-    background: #004a99; /* 전문적인 다크 블루 */
-    color: #ffffff !important;
-    text-decoration: none;
-    font-weight: 700;
+.kpi-card{
+  background: var(--background-color);
+  border: 0; 
+  box-shadow: none;
+  border-radius: var(--radius);
+  padding: var(--pad) calc(var(--pad) + 2px);
 }
-.active:hover{
-    background: #003d80; /* 호버 시 살짝 더 어둡게 */
-    color: #ffffff !important;
+.kpi-top{
+  display:flex; align-items:center; gap:8px;
+  font-weight: 600; opacity: .9; font-size: .95rem;
+}
+.kpi-val{
+  font-size: clamp(1.4rem, 2.5vw, 2.2rem);
+  font-weight: 800; line-height: 1.1;
+  margin: 6px 0 4px;
+}
+.kpi-sub{ font-size: .86rem; color: var(--muted); }
+.kpi-divider{ height:1px; background: var(--soft); margin:10px 0; }
+
+/* 4) Select/MultiSelect 칩 간격 보정 */
+[data-baseweb="tag"]{ margin-right:6px; margin-bottom:6px; }
+
+/* 5) 전반적 보더/쉐도우 비활성 */
+.block-container .element-container, .stContainer{
+  box-shadow: none !important;
 }
 
-/* --- ◀◀◀ [삭제] .module-card --- */
-/* (st.container(border=True)가 대체) */
-
-
-/* --- KPI 카드 (모듈형 카드와 스타일 통일) --- */
-.kpi-card {
-  background: #ffffff; /* 깨끗한 흰색 배경 */
-  border: 1px solid #e9e9e9; /* 매우 연한 테두리 */
-  border-radius: 10px; /* 둥근 모서리 */
-  padding: 20px 15px; /* 상하 여백 증가 */
-  text-align: center;
-  box-shadow: 0 2px 5px rgba(0,0,0,0.03); /* 매우 미세한 그림자 */
-  height: 100%; /* 컬럼 내 높이 통일 */
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-}
-.kpi-title { 
-    font-size: 15px; 
-    font-weight: 600; 
-    margin-bottom: 10px; /* 값과의 간격 증가 */
-    color: #444; 
-}
-.kpi-value { 
-    font-size: 28px; /* 폰트 크기 증가 */
-    font-weight: 700; /* 폰트 굵기 감소 */
-    color: #000; /* 더 진한 검은색 */
-    line-height: 1.2;
+/* 6) 버튼/다운로드 버튼 */
+.stButton>button, .stDownloadButton>button{
+  border-radius: 10px;
 }
 
-/* --- [페이지 2] KPI 서브 라인 스타일 --- */
-.kpi-subwrap { 
-    margin-top: 10px; /* 간격 증가 */
-    line-height: 1.4; 
+/* 7) AgGrid 미니멀(테두리/그림자 제거 + 행간 약간) */
+.ag-theme-streamlit .ag-root-wrapper,
+.ag-theme-streamlit .ag-header,
+.ag-theme-streamlit .ag-header-cell,
+.ag-theme-streamlit .ag-row,
+.ag-theme-streamlit .ag-cell{
+  border: none !important;
+  box-shadow: none !important;
 }
-.kpi-sublabel { 
-    font-size: 12px; /* 폰트 크기 통일 */
-    font-weight: 500; /* 폰트 굵기 */
-    color: #555; 
-    letter-spacing: 0.1px; 
-    margin-right: 6px; 
+.ag-theme-streamlit .ag-row{
+  padding-top: 2px; padding-bottom: 2px;
 }
-.kpi-substrong { 
-    font-size: 14px; 
-    font-weight: 700; 
-    color: #111; 
-}
-.kpi-subpct { 
-    font-size: 14px; 
-    font-weight: 700; 
+.ag-theme-streamlit .ag-row:nth-child(even),
+.ag-theme-streamlit .ag-row:nth-child(odd){
+  background: transparent !important;
 }
 
-/* --- AgGrid 공통 --- */
-.ag-theme-streamlit { 
-    font-size: 13px; /* 기본 폰트 크기 살짝 키움 */
-    /* border: none !important; */ /* ◀◀◀ [삭제] 컨테이너가 테두리 관리 */
-}
-.ag-theme-streamlit .ag-root-wrapper {
-    border-radius: 8px; /* AgGrid 자체의 모서리도 둥글게 */
-}
-/* --- ◀◀◀ [유지] AgGrid 호버 (아이디어 #4) --- */
-.ag-theme-streamlit .ag-row-hover {
-    background-color: #f5f8ff !important; /* 연한 파란색 배경 */
-}
-/* AgGrid 헤더 */
-.ag-theme-streamlit .ag-header-cell-label {
-    justify-content: center !important;
-}
-.ag-theme-streamlit .centered-header .ag-header-cell-label {
-    justify-content: center !important;
-}
-.ag-theme-streamlit .centered-header .ag-sort-indicator-container {
-    margin-left: 4px;
-}
-.ag-theme-streamlit .bold-header .ag-header-cell-text { 
-    font-weight: 700 !important; 
-    font-size: 13px; /* 폰트 크기 명시 */
-    color: #111;
-}
+/* 8) 상단 고정(필터/다운로드 등) */
+.sticky-top{ position: sticky; top: 12px; z-index: 5; }
 
-/* --- 페이지 내 섹션 타이틀 --- */
-.sec-title{ 
-    font-size: 20px; 
-    font-weight: 700; 
-    color: #111; 
-    margin: 0 0 10px 0; /* 카드 상단에 붙도록 마진 조정 */
-    padding-bottom: 0;
-    border-bottom: none; /* 밑줄 제거 */
-}
+/* 9) Plotly 배경 투명화 */
+.js-plotly-plot .plotly .bg{ fill: transparent !important; }
+.js-plotly-plot .plot-container{ background: transparent !important; }
 
-/* --- Streamlit 기본 요소 미세 조정 --- */
-div[data-testid="stMultiSelect"], div[data-testid="stSelectbox"] {
-    margin-top: -10px; 
+/* 10) 반응형 튜닝 */
+@media (max-width: 1200px){
+  :root{ --page-max: 1200px; }
+  .kpi-wrap{ grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 }
-h3 { /* 메인 페이지 타이틀 */
-    margin-top: -15px;
-    margin-bottom: 10px; /* 타이틀과 카드 간 간격 */
+@media (max-width: 900px){
+  .kpi-wrap{ grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+  .kpi-val{ font-size: clamp(1.35rem, 3.2vw, 1.9rem); }
 }
-h4 { /* 페이지 내 부제목 (예: 주요 작품 성과) */
-    font-weight: 700;
-    color: #111;
-    margin-top: 0rem; /* ◀◀◀ [수정] 컨테이너 내부 여백이 있으므로 마진 제거 */
-    margin-bottom: 0.5rem;
-}
-/* 구분선 (st.divider) */
-hr {
-    margin: 1.5rem 0; /* 상하 여백 증가 */
-    background-color: #e0e0e0;
+@media (max-width: 600px){
+  .kpi-wrap{ gap: 12px; }
+  .kpi-card{ padding: 14px 16px; }
 }
 </style>
 """, unsafe_allow_html=True)
-
 #endregion
+
 
 #region [ 5. 사이드바 네비게이션 ]
 # =====================================================
