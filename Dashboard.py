@@ -840,6 +840,7 @@ def render_overview():
         fig.update_traces(texttemplate='%{text:,.0f}', textposition="inside")
         st.plotly_chart(fig, use_container_width=True)
 
+    # ◀◀◀ [수정] divider 위치 변경 (컨테이너 밖으로)
     st.divider()
 
     # --- 주요작품 테이블 (AgGrid) ---
@@ -951,7 +952,6 @@ def render_ip_detail():
     
     month_range = None 
 
-    # ... (중간 데이터 처리 로직은 원본과 동일) ...
 
     # --- 선택 IP / 기간 필터 ---
     f = df_full[df_full["IP"] == ip_selected].copy()
@@ -1292,6 +1292,7 @@ def render_ip_detail():
                 st.info("표시할 화제성 지수 데이터가 없습니다.")
     
         with cF:
+            # ◀◀◀ [수정] 빈 공간에도 동일한 높이 적용
             st.markdown(f"<div style='height:{chart_h}px'></div>", unsafe_allow_html=True)
 
     # === [Row4] TV/TVING 데모분포  ===
@@ -1852,8 +1853,6 @@ def render_ip_vs_group_comparison(
     kpi_percentiles: pd.DataFrame 
 ):
     
-    # ... (데이터 준비 로직은 원본과 동일) ...
-    
     # --- 데이터 준비 ---
     df_ip = df_all[df_all["IP"] == ip].copy()
     df_group = df_all.copy()
@@ -2375,6 +2374,7 @@ def render_comparison():
         else: 
             st.info("필터에서 비교할 두 IP를 선택해주세요.") # '사이드바' -> '필터'
 #endregion
+
 #region [ 12. 페이지 5: 회차별 비교 ]
 # =====================================================
 
