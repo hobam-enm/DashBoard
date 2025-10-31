@@ -1430,7 +1430,7 @@ def render_ip_detail():
     }
     """)
 
-    _js_demo_cols = "[" + ","".join([f'"{c}"' for c in DEMO_COLS_ORDER]) + "]"  # 공통 유틸
+    _js_demo_cols = "[" + ",".join([f'"{c}"' for c in DEMO_COLS_ORDER]) + "]"
     cell_style_renderer = JsCode(f"""
     function(params){{
       const field = params.colDef.field;
