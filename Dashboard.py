@@ -1101,18 +1101,37 @@ def render_ip_detail():
 
     def sublines_html(prog_label: str, rank_tuple: tuple, val, base_val):
         rnk, total = rank_tuple if rank_tuple else (None, 0)
-        rank_html = "<span class='kpi-sublabel'>그룹 內</span> <span class='kpi-substrong'>{}</span>".format((f\"{rnk}위\" if (rnk is not None and total>0) else "–위")).format(
-            prog_label.replace(" 평균", ""), (f"{rnk}위" if (rnk is not None and total>0) else "–위")
+
+        # "그룹 내 N위" 고정 문구
+        rank_label = f"{rnk}위" if (rnk is not None and total > 0) else "–위"
+        rank_html = (
+            "<span class='kpi-sublabel'>그룹 內</span> "
+            f"<span class='kpi-substrong'>{rank_label}</span>"
         )
-        if val is None or pd.isna(val) or base_val in (None,0) or pd.isna(base_val):
-            pct_txt = "–"; col = "#888"
-        else:
-            pct = (val / base_val) * 100
-            pct_txt = f"{pct:.0f}%"; col = _pct_color(val, base_val)
-        pct_html = "<span class='kpi-sublabel'>그룹 평균比</span> <span class='kpi-subpct' style='color:{};'>{}</span>".format(col, pct_txt).format(
-            prog_label, col, pct_txt
+
+        # "그룹 평균比 P%" 고정 문구
+        pct_txt = "–"
+        col = "#888"
+        try:
+            if (
+                val is not None
+                and base_val not in (None, 0)
+                and not (pd.isna(val) or pd.isna(base_val))
+            ):
+                pct = (float(val) / float(base_val)) * 100.0
+                pct_txt = f"{pct:.0f}%"
+                col = _pct_color(val, base_val) if "_pct_color" in globals() else "#333"
+        except Exception:
+            pct_txt = "–"
+            col = "#888"
+
+        pct_html = (
+            "<span class='kpi-sublabel'>그룹 평균比</span> "
+            f"<span class='kpi-subpct' style='color:{col};'>{pct_txt}</span>"
         )
+
         return f"<div class='kpi-subwrap'>{rank_html}<br/>{pct_html}</div>"
+
 
     def kpi_with_rank(col, title, value, base_val, rank_tuple, prog_label, intlike=False, digits=3):
         with col:
