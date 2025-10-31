@@ -3,215 +3,139 @@
 
 #region [ 1. 라이브러리 임포트 ]
 # =====================================================
+import os
+import sys
+import platform
+import traceback
 import datetime
 import re
-from typing import List, Dict, Any, Optional 
+from typing import List, Dict, Any, Optional
 
 import numpy as np
 import pandas as pd
 import plotly.express as px
 from plotly import graph_objects as go
-import plotly.io as pio  # ◀◀◀ [수정] 차트 테마 적용을 위해 추가
+import plotly.io as pio
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 
-# ◀◀◀ [신규] 비공개 구글 시트 접근용 (서비스계정)
-# - requirements.txt 에 gspread, google-auth 추가 필요
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-except Exception as _imp_err:
-    gspread = None
-    Credentials = None
+# Google Sheets
+import gspread
+from google.oauth2.service_account import Credentials
 #endregion
 
 #region [ 2. 기본 설정 및 공통 상수 ]
 # =====================================================
-st.set_page_config(page_title="Overview Dashboard", layout="wide", initial_sidebar_state="expanded")
-
-# ===== 구글 시트 식별자 =====
-# - st.secrets 에서 우선 가져오고, 없으면 하드코딩 기본값 사용
-SHEET_ID = st.secrets.get("SHEET_ID", "1fKVPXGN-R2bsrv018dz8zTmg431ZSBHx1PCTnMpdoWY")
-# GID 는 숫자 또는 탭명(예: "RAW_원본") 둘 다 허용
-GID = st.secrets.get("GID", "407131354")  # 숫자 문자열 or 워크시트 이름
-
-# (백업) 공개 시트일 때만 쓰는 CSV URL — 비공개면 사용되지 않음
-CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}" \
-          if str(GID).isdigit() else None
-
-# ===== 네비게이션 아이템 정의 (v2.0) =====
-NAV_ITEMS = {
-    "Overview": "📊 Overview",
-    "IP 성과": "📈 IP 성과 자세히보기",
-    "데모그래픽": "👥 IP 오디언스 히트맵",
-    "비교분석": "⚖️ IP간 비교분석",
-    "성장스코어-방영지표": "🚀 성장스코어-방영지표",
-    "성장스코어-디지털": "🛰️ 성장스코어-디지털",
-    "회차별": "🎬 회차별 비교",
-}
-
-# ===== 데모 컬럼 순서 (페이지 2, 3에서 공통 사용) =====
-DECADES = ["10대","20대","30대","40대","50대","60대"]
-DEMO_COLS_ORDER = [f"{d}남성" for d in DECADES] + [f"{d}여성" for d in DECADES]
-
-# ===== Google API 범위 =====
-_GOOGLE_SCOPES = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/drive.readonly",
-]
-
-# ===== Plotly 공통 테마 =====
-dashboard_theme = go.Layout(
-    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-    font=dict(family='sans-serif', size=12, color='#333333'),
-    title=dict(font=dict(size=16, color="#111"), x=0.05),
-    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1, bgcolor='rgba(0,0,0,0)'),
-    margin=dict(l=20, r=20, t=50, b=20),
-    xaxis=dict(showgrid=False, zeroline=True, zerolinecolor='#e0e0e0', zerolinewidth=1),
-    yaxis=dict(showgrid=True, gridcolor='#f0f0f0', zeroline=True, zerolinecolor='#e0e0e0'),
+# 페이지 설정
+st.set_page_config(
+    page_title="Overview Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
-pio.templates['dashboard_theme'] = go.layout.Template(layout=dashboard_theme)
-pio.templates.default = 'dashboard_theme'
+
+# Streamlit Secrets에서 환경 변수 읽기
+# .streamlit/secrets.toml 에 다음 키들이 있어야 합니다:
+# SHEET_ID, GID(or RAW_WORKSHEET), [gcp_service_account] {...}
+SHEET_ID = st.secrets.get("SHEET_ID", "").strip()
+# GID는 워크시트 '이름' 또는 숫자 GID 모두 허용
+GID_OR_NAME = str(st.secrets.get("GID", st.secrets.get("RAW_WORKSHEET", ""))).strip()
+
+# Plotly 기본 테마(선택)
+pio.templates.default = "plotly_white"
+
+# 공통 상수 (예: 사이드바 폭, 네비 등 기존 값들이 있다면 여기 유지)
+SIDEBAR_WIDTH = 300
+#endregion
+#region [ 2-1. 부트 가드 (초기 점검) ]
 # =====================================================
+# 초기 단계에서 어디서 실패하는지 바로 화면에 띄워주는 가드 유틸
+st.sidebar.write("🔍 **Boot check**")
+st.sidebar.write(f"Python: {platform.python_version()}")
+st.sidebar.write(f"Working dir: {os.getcwd()}")
+
+def _guard(label: str, fn):
+    """
+    label 단계에서 예외가 나면 UI에 즉시 표시하고 st.stop()으로 진행 중단.
+    """
+    try:
+        st.sidebar.write(f"⏳ {label}…")
+        v = fn()
+        st.sidebar.write(f"✅ {label} OK")
+        return v
+    except Exception as e:
+        st.sidebar.error(f"❌ {label} 실패: {e.__class__.__name__}: {e}")
+        st.exception(e)  # 전체 Traceback 본문 출력
+        st.stop()
+
+# 필수 시크릿 존재 확인
+_guard("secrets[gcp_service_account].client_email", lambda: st.secrets["gcp_service_account"]["client_email"])
+_guard("SHEET_ID", lambda: SHEET_ID if SHEET_ID else (_ for _ in ()).throw(ValueError("SHEET_ID 누락")))
+_guard("GID_OR_NAME", lambda: GID_OR_NAME if GID_OR_NAME else (_ for _ in ()).throw(ValueError("GID/RAW_WORKSHEET 누락")))
+#endregion
+#region [ 3. 구글 시트 인증/연결 ]
+# =====================================================
+# gspread 인증 및 워크시트 열기
+def get_gspread_client():
+    def _mk():
+        creds_info = dict(st.secrets["gcp_service_account"])  # service account json 그대로
+        scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        creds = Credentials.from_service_account_info(creds_info, scopes=scopes)
+        return gspread.authorize(creds)
+    return _guard("gspread auth", _mk)
+
+GC = get_gspread_client()
+
+def open_worksheet(sheet_id: str, gid_or_name: str):
+    def _open():
+        sh = GC.open_by_key(sheet_id)
+        # 숫자면 GID로, 아니면 이름으로 연다
+        if gid_or_name.isdigit():
+            ws = sh.get_worksheet_by_id(int(gid_or_name))
+        else:
+            ws = sh.worksheet(gid_or_name)
+        if ws is None:
+            raise RuntimeError(f"워크시트를 찾을 수 없음: {gid_or_name}")
+        return ws
+    return _guard(f"open worksheet '{gid_or_name}'", _open)
+
+WS = open_worksheet(SHEET_ID, GID_OR_NAME)
 #endregion
 
 #region [ 3. 공통 함수: 데이터 로드 / 유틸리티 ]
 # =====================================================
+"""
+본 리전은 [ 3. 구글 시트 인증/연결 ] 리전에서 생성한 WS(워크시트 객체)를 전제로 한다.
+- 인증/접속 중복 수행 없음 → 무한로딩/세션 데드락 방지
+- 데이터 로드 단계에서만 최소 기능 수행
+"""
 
-def _has_service_account() -> bool:
-    """
-    st.secrets 에 서비스계정 정보가 있는지 확인.
-    - 우선순위:
-      1) st.secrets["gcp_service_account"] (dict)
-      2) st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"] (string JSON)
-      3) st.secrets 중 값에 {"type":"service_account"} 포함된 dict
-    """
-    try:
-        if "gcp_service_account" in st.secrets:
-            return True
-        if "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets:
-            return True
-        # 키명이 다를 수 있으니 value를 스캔
-        for _, v in st.secrets.items():
-            if isinstance(v, dict) and v.get("type") == "service_account":
-                return True
-    except Exception:
-        pass
-    return False
-
-def _get_credentials():
-    """
-    서비스계정 Credentials 생성 (gspread용). 없으면 None.
-    """
-    if Credentials is None:
-        return None
-    try:
-        # 1) 명시 키
-        if "gcp_service_account" in st.secrets:
-            info = st.secrets["gcp_service_account"]
-            return Credentials.from_service_account_info(info, scopes=_GOOGLE_SCOPES)
-        if "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets:
-            import json
-            info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
-            return Credentials.from_service_account_info(info, scopes=_GOOGLE_SCOPES)
-        # 2) 값 스캔
-        for _, v in st.secrets.items():
-            if isinstance(v, dict) and v.get("type") == "service_account":
-                return Credentials.from_service_account_info(v, scopes=_GOOGLE_SCOPES)
-    except Exception as e:
-        st.error(f"서비스계정 로드 오류: {e}")
-    return None
-
-def _open_worksheet_by_gid_or_name(sh, gid_or_name: str):
-    """
-    gid_or_name 이 숫자면 get_worksheet_by_id, 아니면 이름으로 open.
-    미존재 시 첫 시트 fallback.
-    """
-    ws = None
-    try:
-        if str(gid_or_name).isdigit():
-            try:
-                ws = sh.get_worksheet_by_id(int(gid_or_name))
-            except Exception:
-                # 일부 gspread 버전 호환
-                for _ws in sh.worksheets():
-                    if int(_ws.id) == int(gid_or_name):
-                        ws = _ws
-                        break
-        else:
-            # 탭명
-            ws = sh.worksheet(gid_or_name)
-    except Exception:
-        ws = None
-
-    if ws is None:
-        ws = sh.get_worksheet(0)
-    return ws
-
-def _read_dataframe_via_gspread(sheet_id: str, gid_or_name: str) -> pd.DataFrame:
-    """
-    gspread를 통해 비공개 스프레드시트를 읽어 DataFrame 반환.
-    - gid_or_name: 워크시트 ID(정수 문자열) 또는 탭 이름(예: 'RAW_원본')
-    - 헤더는 1행으로 가정
-    """
-    if gspread is None:
-        raise RuntimeError("gspread 모듈이 설치되어 있지 않습니다. requirements.txt에 gspread, google-auth를 추가하세요.")
-
-    creds = _get_credentials()
-    if creds is None:
-        raise RuntimeError("서비스계정 자격증명을 찾을 수 없습니다. st.secrets에 서비스계정 JSON을 설정하세요.")
-
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(sheet_id)
-    ws = _open_worksheet_by_gid_or_name(sh, gid_or_name)
-
-    values = ws.get_all_values()
-    if not values:
-        return pd.DataFrame()
-
-    header = values[0]
-    rows = values[1:] if len(values) > 1 else []
-    df = pd.DataFrame(rows, columns=header)
-    return df
-
-# ===== 데이터 로드 (캐싱) =====
-@st.cache_data(ttl=600)
-def load_data(_: str = "") -> pd.DataFrame:
-    """
-    데이터 로드(비공개/공개 자동 지원)
-      - st.secrets에 서비스계정이 있으면 gspread로 비공개 접근
-      - 없으면 공개 CSV URL(CSV_URL)을 이용
-    이후 공통 전처리 수행
-    """
-    # --- 원본 로드 ---
-    try:
-        if _has_service_account():
-            df = _read_dataframe_via_gspread(SHEET_ID, GID)
-        else:
-            if CSV_URL is None:
-                raise RuntimeError("CSV_URL을 구성할 수 없습니다. (GID가 탭명이면 공개 CSV 접근 불가)")
-            df = pd.read_csv(CSV_URL)
-    except Exception as e:
-        st.error(f"데이터 로드 오류: {e}")
-        return pd.DataFrame()
+def _df_basic_clean(df: pd.DataFrame) -> pd.DataFrame:
+    """공통 정제/파생 컬럼 생성 로직."""
+    if df.empty:
+        return df
 
     # --- 날짜 파싱 ---
     if "주차시작일" in df.columns:
         df["주차시작일"] = pd.to_datetime(
             df["주차시작일"].astype(str).str.strip(),
-            format="%Y. %m. %d", errors="coerce"
+            format="%Y. %m. %d",
+            errors="coerce",
         )
     if "방영시작일" in df.columns:
         df["방영시작일"] = pd.to_datetime(
             df["방영시작일"].astype(str).str.strip(),
-            format="%Y. %m. %d", errors="coerce"
+            format="%Y. %m. %d",
+            errors="coerce",
         )
 
     # --- 숫자형 데이터 변환 ---
     if "value" in df.columns:
-        v = df["value"].astype(str).str.replace(",", "", regex=False).str.replace("%", "", regex=False)
+        v = (
+            df["value"]
+            .astype(str)
+            .str.replace(",", "", regex=False)
+            .str.replace("%", "", regex=False)
+        )
         df["value"] = pd.to_numeric(v, errors="coerce").fillna(0)
 
     # --- 문자열 데이터 정제 ---
@@ -219,13 +143,61 @@ def load_data(_: str = "") -> pd.DataFrame:
         if c in df.columns:
             df[c] = df[c].astype(str).str.strip()
 
-    # --- 파생 컬럼 생성 ---
+    # --- 파생 컬럼 ---
     if "회차" in df.columns:
         df["회차_numeric"] = df["회차"].str.extract(r"(\d+)", expand=False).astype(float)
     else:
         df["회차_numeric"] = pd.NA
 
     return df
+
+
+def _load_df_from_ws(ws) -> pd.DataFrame:
+    """
+    이미 열린 gspread Worksheet(WS)에서 모든 값을 읽어 DataFrame으로 변환.
+    - 헤더: 1행
+    - 빈 시트/헤더 누락 예외 처리
+    """
+    values = ws.get_all_values()
+    if not values:
+        return pd.DataFrame()
+
+    header = values[0] if len(values) >= 1 else []
+    rows = values[1:] if len(values) >= 2 else []
+
+    if not header:
+        # 헤더가 비면 로드 실패로 간주
+        raise ValueError("RAW 시트의 헤더 행을 찾을 수 없습니다. (1행이 비어있음)")
+
+    df = pd.DataFrame(rows, columns=header)
+    return df
+
+
+@st.cache_data(ttl=600)
+def load_data(_: str = "") -> pd.DataFrame:
+    """
+    데이터 로드(비공개, WS 사용 고정)
+    - [ 3. 구글 시트 인증/연결 ] 리전에서 생성한 WS 전제
+    - 이후 공통 전처리 수행
+    """
+    try:
+        # 부트 가드에서 실패 시 여기 오지 않지만, 방어적으로 체크
+        if "WS" not in globals() or WS is None:
+            raise RuntimeError("WS(워크시트)가 초기화되지 않았습니다. [ 3. 구글 시트 인증/연결 ] 리전을 확인하세요.")
+
+        df = _load_df_from_ws(WS)
+        df = _df_basic_clean(df)
+
+        # 추가적인 전처리/캐시 키 생성 등 필요 시 여기에 작성
+        # 예) df = enrich_metrics(df)  # 사용자 정의 함수
+
+        return df
+
+    except Exception as e:
+        st.error(f"데이터 로드 오류: {e.__class__.__name__}: {e}")
+        st.exception(e)
+        return pd.DataFrame()
+
 # =====================================================
 #endregion
 
