@@ -229,199 +229,90 @@ def get_episode_options(df: pd.DataFrame) -> List[str]:
     else: return []
 #endregion
 
-#region [ 4. 공통 스타일 ]
+#region [ 4. 공통 스타일 (KPI/네비 보존) ]
 # =====================================================
-# CSS 수정: 전체적인 색상 톤, 폰트, 카드 디자인을 더 세련되게 변경
+import streamlit as st
+
 st.markdown("""
 <style>
-/* --- 전체 앱 배경 --- */
-[data-testid="stAppViewContainer"] {
-    background-color: #f8f9fa; /* 매우 연한 회색 배경 */
-}
-/* --- ◀◀◀ [수정] st.container(border=True) 스타일 오버라이드 --- */
-div[data-testid="stVerticalBlockBorderWrapper"] {
-    background-color: #ffffff;
-    border: 0 !important;
-    border-radius: 10px;
-    box-shadow: none !important;
-    padding: 1.25rem 1.25rem 1.5rem 1.25rem; /* 20px 20px 25px 20px */
-    margin-bottom: 1.5rem; /* 카드 간 세로 간격 */
+:root{
+  --page-max: 1500px;
+  --gap: 16px;
+  --radius: 14px;
+  --pad: 18px;
+  --muted: rgba(0,0,0,.65);
+  --soft:  rgba(0,0,0,.06);
 }
 
-
-/* --- 컨테이너 내부 여백/정렬 보정 --- */
-div[data-testid="stVerticalBlock"] > div:nth-child(1) {
-    padding-top: 0.2rem; /* 헤더와의 간격을 조금만 둬서 답답함 해소 */
+/* 페이지 컨테이너 폭만 살짝 확장 (전역 안전) */
+.main .block-container{
+  max-width: var(--page-max);
+  padding-left: 1rem;
+  padding-right: 1rem;
 }
 
-/* --- 사이드바 폭/정렬 (v2.0 원본 유지) --- */
-section[data-testid="stSidebar"] > div {
-    padding-left: 0.5rem;
-    padding-right: 0.5rem;
-    min-width:300px !important;
-    max-width:300px !important;
-}
-/* 사이드바 접힘 토글 버튼 숨김 */
-div[data-testid="collapsedControl"] { display:none !important; }
+/* ===========================
+   🔒 보존: KPI/네비는 절대 미변경
+   - .kpi-* / .nav-* 셀렉터에 대한 어떤 오버라이드도 없음
+   =========================== */
 
-/* --- 로고 --- */
-.sidebar-logo{
-    font-size: 28px; /* 크기 살짝 조정 */
-    font-weight: 700; 
-    color: #1a1a1a; /* 더 진한 검은색 */
-    text-align: center; 
-    margin-bottom: 10px;
-    padding-top: 6px;
+/* ===========================
+   ✅ 필요한 곳에만 ‘플랫(보더0/쉐도우0)’ 적용하는 유틸 클래스
+   - 원하는 블록을 <div class="box-plain">...</div> 로 감싸서 사용
+   - 전역 컨테이너/기본 컴포넌트엔 손대지 않음
+   =========================== */
+.box-plain{
+  background: var(--background-color);
+  border: 0 !important;
+  box-shadow: none !important;
+  border-radius: var(--radius);
+  padding: var(--pad) calc(var(--pad) + 2px);
+  margin: 8px 0;
 }
+.divider-ghost{ height: 10px; }
 
-/* --- 네비 버튼 --- */
-.nav-btn{
-    display: flex; 
-    align-items: center; 
-    width: 100%;
-    padding: 10px 12px;
-    font-weight: 600; 
-    color: #222; 
-    text-decoration: none; 
-    border-radius: 10px; 
-    transition: background .15s ease;
-    margin-bottom: 6px;
-    border: 1px solid #ececec; 
-    background: #fff;
-}
-.nav-btn:hover{ background: #f6f7f8; }
-.nav-btn .icon{ margin-right: 8px; }
+/* 텍스트 톤/헤더(안전 범위 내) */
+h1,h2,h3{ letter-spacing: .2px; }
 
-/* --- 페이지 타이틀(H1) --- */
-h1 { 
-    font-weight: 800; 
-    color: #111; 
-    letter-spacing: .2px;
-    margin-top: 0.2rem; 
-    margin-bottom: 0.8rem; 
-}
-/* --- 섹션 H2 --- */
-h2 { 
-    font-weight: 800;
-    color: #111;
-    margin-top: 0.2rem; 
-    margin-bottom: 0.6rem;
-}
-/* --- 서브헤드 H3 --- */
-h3 { 
-    font-weight: 700; 
-    color: #222; 
-    margin-top: 0.2rem;
-    margin-bottom: 0.6rem;
+/* 버튼(라운드만 살짝) — KPI/네비와 무관 */
+.stButton>button, .stDownloadButton>button{
+  border-radius: 10px;
 }
 
-/* --- KPI 카드 (모듈형 카드와 스타일 통일) --- */
-.kpi-card {
-  background: #ffffff; /* 깨끗한 흰색 배경 */
-  border: 0 !important; /* 변경 */
-  border-radius: 10px; /* 둥근 모서리 */
-  padding: 20px 15px; /* 상하 여백 증가 */
-  text-align: center;
-  box-shadow: none !important; /* 변경 */
-  height: 100%; /* 컬럼 내 높이 통일 */
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
+/* ===========================
+   AgGrid “선택적” 미니멀 모드
+   - AgGrid 위/아래로 <div class="ag-minimal"> … </div> 감싸면 적용
+   - 기본 테마는 그대로 유지됨 (안 감싸면 변화 없음)
+   =========================== */
+.ag-minimal .ag-root-wrapper,
+.ag-minimal .ag-header,
+.ag-minimal .ag-header-cell,
+.ag-minimal .ag-row,
+.ag-minimal .ag-cell{
+  border: none !important;
+  box-shadow: none !important;
 }
-.kpi-title { 
-    font-size: 15px; 
-    font-weight: 600; 
-    color: #333; 
-    margin-bottom: 6px;
+.ag-minimal .ag-row{
+  padding-top: 2px; padding-bottom: 2px;
 }
-.kpi-value { 
-    font-size: 28px; 
-    font-weight: 800; 
-    color: #111; 
-    line-height: 1.15; 
-    margin-bottom: 2px;
-}
-.kpi-sub { 
-    font-size: 13px; 
-    color: #666; 
-}
-.kpi-substrong { 
-    font-size: 14px; 
-    font-weight: 700; 
-    color: #111; 
-}
-.kpi-subpct { 
-    font-size: 14px; 
-    font-weight: 700; 
+.ag-minimal .ag-row:nth-child(even),
+.ag-minimal .ag-row:nth-child(odd){
+  background: transparent !important;
 }
 
-/* --- AgGrid 공통 --- */
-.ag-theme-streamlit { 
-    font-size: 13px; /* 기본 폰트 크기 살짝 키움 */
-}
-.ag-theme-streamlit .ag-header { 
-    font-weight: 700; 
-}
-.ag-theme-streamlit .ag-cell, 
-.ag-theme-streamlit .ag-header-cell { 
-    border: none !important; /* 테이블 셀 보더 제거 */
-}
-.ag-theme-streamlit .ag-root-wrapper,
-.ag-theme-streamlit .ag-root-wrapper-body {
-    box-shadow: none !important; 
-    border: none !important; 
-    background: transparent !important;
-}
+/* Plotly 배경 투명화 유틸 (필요한 섹션만 .plot-clear로 감싸서) */
+.plot-clear .js-plotly-plot .plotly .bg{ fill: transparent !important; }
+.plot-clear .js-plotly-plot .plot-container{ background: transparent !important; }
 
-/* --- 표 설명/캡션 --- */
-.caption-muted{
-    font-size: 12px; 
-    color: #777;
-    margin-top: 6px;
+/* 반응형 미세 튜닝(안전 범위) */
+@media (max-width: 1200px){
+  :root{ --page-max: 1200px; }
 }
-
-/* --- 페이지 내 섹션 타이틀 --- */
-.sec-title{ 
-    font-size: 20px; 
-    font-weight: 700; 
-    color: #111; 
-    margin: 0 0 10px 0; /* 카드 상단에 붙도록 마진 조정 */
-    padding-bottom: 0;
-    border-bottom: none; /* 밑줄 제거 */
-}
-
-/* --- Streamlit 기본 요소 미세 조정 --- */
-.stButton>button, .stDownloadButton>button {
-    border-radius: 10px;
-    font-weight: 700;
-}
-.stSelectbox label, .stMultiSelect label { 
-    font-weight: 700; 
-    color: #111;
-    margin-bottom: 0.4rem;
-}
-.stSelectbox [data-baseweb="select"]>div, 
-.stMultiSelect [data-baseweb="select"]>div {
-    border-radius: 8px;
-}
-small, .small, .helper { 
-    font-size: 12px; 
-    color: #666;
-}
-h4 { /* 페이지 내 부제목 (예: 주요 작품 성과) */
-    font-weight: 700;
-    color: #111;
-    margin-top: 0rem; /* 컨테이너 내부 여백이 있으므로 마진 제거 */
-    margin-bottom: 0.5rem;
-}
-/* 구분선 (st.divider) */
-hr {
-    margin: 1.5rem 0; /* 상하 여백 증가 */
-    background-color: #e0e0e0;
+@media (max-width: 600px){
+  .box-plain{ padding: 14px 16px; }
 }
 </style>
 """, unsafe_allow_html=True)
-
 #endregion
 
 #region [ 5. 사이드바 네비게이션 ]
