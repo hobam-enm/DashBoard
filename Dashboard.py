@@ -241,19 +241,21 @@ st.markdown("""
 /* --- ◀◀◀ [수정] st.container(border=True) 스타일 오버라이드 --- */
 div[data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #ffffff;
-    border: 1px solid #e9e9e9;
-    border-radius: 0px;
-    box-shadow: 0 ;
+    border: 0 !important;
+    border-radius: 10px;
+    box-shadow: none !important;
     padding: 1.25rem 1.25rem 1.5rem 1.25rem; /* 20px 20px 25px 20px */
     margin-bottom: 1.5rem; /* 카드 간 세로 간격 */
 }
 
 
-/* --- Sidebar 배경/패딩 + 항상 펼침(폭 고정) --- */
-section[data-testid="stSidebar"] {
-    background: #ffffff; /* 흰색 배경 */
-    border-right: 1px solid #e0e0e0; /* 연한 경계선 */
-    padding-top: 1rem;
+/* --- 컨테이너 내부 여백/정렬 보정 --- */
+div[data-testid="stVerticalBlock"] > div:nth-child(1) {
+    padding-top: 0.2rem; /* 헤더와의 간격을 조금만 둬서 답답함 해소 */
+}
+
+/* --- 사이드바 폭/정렬 (v2.0 원본 유지) --- */
+section[data-testid="stSidebar"] > div {
     padding-left: 0.5rem;
     padding-right: 0.5rem;
     min-width:300px !important;
@@ -269,51 +271,58 @@ div[data-testid="collapsedControl"] { display:none !important; }
     color: #1a1a1a; /* 더 진한 검은색 */
     text-align: center; 
     margin-bottom: 10px;
-    padding-top: 10px;
+    padding-top: 6px;
 }
 
-/* --- 네비게이션 아이템 --- */
-.nav-item{
-    display: block;
+/* --- 네비 버튼 --- */
+.nav-btn{
+    display: flex; 
+    align-items: center; 
     width: 100%;
-    padding: 12px 15px; /* 패딩 조정 */
-    color: #333 !important; /* 기본 텍스트 색상 */
-    background: #f1f3f5; /* 연한 회색 배경 */
-    text-decoration: none !important;
-    font-weight: 600; /* 폰트 굵기 */
-    border-radius: 8px; /* 둥근 모서리 */
-    margin-bottom: 5px; /* 아이템간 간격 */
-    text-align: center;
-    transition: background-color 0.2s ease, color 0.2s ease;
+    padding: 10px 12px;
+    font-weight: 600; 
+    color: #222; 
+    text-decoration: none; 
+    border-radius: 10px; 
+    transition: background .15s ease;
+    margin-bottom: 6px;
+    border: 1px solid #ececec; 
+    background: #fff;
 }
-.nav-item:hover{
-    background: #e9ecef; /* 호버 시 더 진한 회색 */
-    color: #000 !important;
-    text-decoration: none;
-}
-.active{
-    background: #004a99; /* 전문적인 다크 블루 */
-    color: #ffffff !important;
-    text-decoration: none;
-    font-weight: 700;
-}
-.active:hover{
-    background: #003d80; /* 호버 시 살짝 더 어둡게 */
-    color: #ffffff !important;
-}
+.nav-btn:hover{ background: #f6f7f8; }
+.nav-btn .icon{ margin-right: 8px; }
 
-/* --- ◀◀◀ [삭제] .module-card --- */
-/* (st.container(border=True)가 대체) */
-
+/* --- 페이지 타이틀(H1) --- */
+h1 { 
+    font-weight: 800; 
+    color: #111; 
+    letter-spacing: .2px;
+    margin-top: 0.2rem; 
+    margin-bottom: 0.8rem; 
+}
+/* --- 섹션 H2 --- */
+h2 { 
+    font-weight: 800;
+    color: #111;
+    margin-top: 0.2rem; 
+    margin-bottom: 0.6rem;
+}
+/* --- 서브헤드 H3 --- */
+h3 { 
+    font-weight: 700; 
+    color: #222; 
+    margin-top: 0.2rem;
+    margin-bottom: 0.6rem;
+}
 
 /* --- KPI 카드 (모듈형 카드와 스타일 통일) --- */
 .kpi-card {
   background: #ffffff; /* 깨끗한 흰색 배경 */
-  border: 1px solid #e9e9e9; /* 매우 연한 테두리 */
+  border: 0 !important; /* 변경 */
   border-radius: 10px; /* 둥근 모서리 */
   padding: 20px 15px; /* 상하 여백 증가 */
   text-align: center;
-  box-shadow: 0 2px 5px rgba(0,0,0,0.03); /* 매우 미세한 그림자 */
+  box-shadow: none !important; /* 변경 */
   height: 100%; /* 컬럼 내 높이 통일 */
   display: flex;
   flex-direction: column;
@@ -322,27 +331,19 @@ div[data-testid="collapsedControl"] { display:none !important; }
 .kpi-title { 
     font-size: 15px; 
     font-weight: 600; 
-    margin-bottom: 10px; /* 값과의 간격 증가 */
-    color: #444; 
+    color: #333; 
+    margin-bottom: 6px;
 }
 .kpi-value { 
-    font-size: 28px; /* 폰트 크기 증가 */
-    font-weight: 700; /* 폰트 굵기 감소 */
-    color: #000; /* 더 진한 검은색 */
-    line-height: 1.2;
+    font-size: 28px; 
+    font-weight: 800; 
+    color: #111; 
+    line-height: 1.15; 
+    margin-bottom: 2px;
 }
-
-/* --- [페이지 2] KPI 서브 라인 스타일 --- */
-.kpi-subwrap { 
-    margin-top: 10px; /* 간격 증가 */
-    line-height: 1.4; 
-}
-.kpi-sublabel { 
-    font-size: 12px; /* 폰트 크기 통일 */
-    font-weight: 500; /* 폰트 굵기 */
-    color: #555; 
-    letter-spacing: 0.1px; 
-    margin-right: 6px; 
+.kpi-sub { 
+    font-size: 13px; 
+    color: #666; 
 }
 .kpi-substrong { 
     font-size: 14px; 
@@ -357,29 +358,26 @@ div[data-testid="collapsedControl"] { display:none !important; }
 /* --- AgGrid 공통 --- */
 .ag-theme-streamlit { 
     font-size: 13px; /* 기본 폰트 크기 살짝 키움 */
-    /* border: none !important; */ /* ◀◀◀ [삭제] 컨테이너가 테두리 관리 */
 }
-.ag-theme-streamlit .ag-root-wrapper {
-    border-radius: 8px; /* AgGrid 자체의 모서리도 둥글게 */
+.ag-theme-streamlit .ag-header { 
+    font-weight: 700; 
 }
-/* --- ◀◀◀ [유지] AgGrid 호버 (아이디어 #4) --- */
-.ag-theme-streamlit .ag-row-hover {
-    background-color: #f5f8ff !important; /* 연한 파란색 배경 */
+.ag-theme-streamlit .ag-cell, 
+.ag-theme-streamlit .ag-header-cell { 
+    border: none !important; /* 테이블 셀 보더 제거 */
 }
-/* AgGrid 헤더 */
-.ag-theme-streamlit .ag-header-cell-label {
-    justify-content: center !important;
+.ag-theme-streamlit .ag-root-wrapper,
+.ag-theme-streamlit .ag-root-wrapper-body {
+    box-shadow: none !important; 
+    border: none !important; 
+    background: transparent !important;
 }
-.ag-theme-streamlit .centered-header .ag-header-cell-label {
-    justify-content: center !important;
-}
-.ag-theme-streamlit .centered-header .ag-sort-indicator-container {
-    margin-left: 4px;
-}
-.ag-theme-streamlit .bold-header .ag-header-cell-text { 
-    font-weight: 700 !important; 
-    font-size: 13px; /* 폰트 크기 명시 */
-    color: #111;
+
+/* --- 표 설명/캡션 --- */
+.caption-muted{
+    font-size: 12px; 
+    color: #777;
+    margin-top: 6px;
 }
 
 /* --- 페이지 내 섹션 타이틀 --- */
@@ -393,17 +391,27 @@ div[data-testid="collapsedControl"] { display:none !important; }
 }
 
 /* --- Streamlit 기본 요소 미세 조정 --- */
-div[data-testid="stMultiSelect"], div[data-testid="stSelectbox"] {
-    margin-top: -10px; 
+.stButton>button, .stDownloadButton>button {
+    border-radius: 10px;
+    font-weight: 700;
 }
-h3 { /* 메인 페이지 타이틀 */
-    margin-top: -15px;
-    margin-bottom: 10px; /* 타이틀과 카드 간 간격 */
+.stSelectbox label, .stMultiSelect label { 
+    font-weight: 700; 
+    color: #111;
+    margin-bottom: 0.4rem;
+}
+.stSelectbox [data-baseweb="select"]>div, 
+.stMultiSelect [data-baseweb="select"]>div {
+    border-radius: 8px;
+}
+small, .small, .helper { 
+    font-size: 12px; 
+    color: #666;
 }
 h4 { /* 페이지 내 부제목 (예: 주요 작품 성과) */
     font-weight: 700;
     color: #111;
-    margin-top: 0rem; /* ◀◀◀ [수정] 컨테이너 내부 여백이 있으므로 마진 제거 */
+    margin-top: 0rem; /* 컨테이너 내부 여백이 있으므로 마진 제거 */
     margin-bottom: 0.5rem;
 }
 /* 구분선 (st.divider) */
