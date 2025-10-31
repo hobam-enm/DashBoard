@@ -30,12 +30,14 @@ except Exception as _imp_err:
 st.set_page_config(page_title="Overview Dashboard", layout="wide", initial_sidebar_state="expanded")
 
 # ===== 구글 시트 식별자 =====
-# 공개/비공개 공통으로 사용: 서비스계정이 있으면 비공개 접근, 없으면 공개 CSV URL 사용
-SHEET_ID = "1fKVPXGN-R2bsrv018dz8zTmg431ZSBHx1PCTnMpdoWY"
-GID = "407131354"  # RAW_원본
+# - st.secrets 에서 우선 가져오고, 없으면 하드코딩 기본값 사용
+SHEET_ID = st.secrets.get("SHEET_ID", "1fKVPXGN-R2bsrv018dz8zTmg431ZSBHx1PCTnMpdoWY")
+# GID 는 숫자 또는 탭명(예: "RAW_원본") 둘 다 허용
+GID = st.secrets.get("GID", "407131354")  # 숫자 문자열 or 워크시트 이름
 
 # (백업) 공개 시트일 때만 쓰는 CSV URL — 비공개면 사용되지 않음
-CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}"
+CSV_URL = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={GID}" \
+          if str(GID).isdigit() else None
 
 # ===== 네비게이션 아이템 정의 (v2.0) =====
 NAV_ITEMS = {
@@ -52,7 +54,7 @@ NAV_ITEMS = {
 DECADES = ["10대","20대","30대","40대","50대","60대"]
 DEMO_COLS_ORDER = [f"{d}남성" for d in DECADES] + [f"{d}여성" for d in DECADES]
 
-# ===== ◀◀◀ [신규] Google API 범위 =====
+# ===== Google API 범위 =====
 _GOOGLE_SCOPES = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/spreadsheets",
@@ -60,33 +62,15 @@ _GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/drive.readonly",
 ]
 
-# ===== ◀◀◀ [신규] Plotly 공통 테마 (아이디어 #3) =====
+# ===== Plotly 공통 테마 =====
 dashboard_theme = go.Layout(
-    paper_bgcolor='rgba(0,0,0,0)',  # 카드 배경과 동일하게 투명
-    plot_bgcolor='rgba(0,0,0,0)',   # 차트 내부 배경 투명
+    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
     font=dict(family='sans-serif', size=12, color='#333333'),
     title=dict(font=dict(size=16, color="#111"), x=0.05),
-    legend=dict(
-        orientation='h',
-        yanchor='bottom',
-        y=1.02,
-        xanchor='right',
-        x=1,
-        bgcolor='rgba(0,0,0,0)'
-    ),
-    margin=dict(l=20, r=20, t=50, b=20), # 기본 마진
-    xaxis=dict(
-        showgrid=False, 
-        zeroline=True, 
-        zerolinecolor='#e0e0e0', 
-        zerolinewidth=1
-    ),
-    yaxis=dict(
-        showgrid=True, 
-        gridcolor='#f0f0f0', # 매우 연한 그리드
-        zeroline=True, 
-        zerolinecolor='#e0e0e0'
-    ),
+    legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='right', x=1, bgcolor='rgba(0,0,0,0)'),
+    margin=dict(l=20, r=20, t=50, b=20),
+    xaxis=dict(showgrid=False, zeroline=True, zerolinecolor='#e0e0e0', zerolinewidth=1),
+    yaxis=dict(showgrid=True, gridcolor='#f0f0f0', zeroline=True, zerolinecolor='#e0e0e0'),
 )
 pio.templates['dashboard_theme'] = go.layout.Template(layout=dashboard_theme)
 pio.templates.default = 'dashboard_theme'
@@ -99,14 +83,20 @@ pio.templates.default = 'dashboard_theme'
 def _has_service_account() -> bool:
     """
     st.secrets 에 서비스계정 정보가 있는지 확인.
-    - 권장 키: st.secrets["gcp_service_account"] (dict 그대로)
-    - 대안:    st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"] (JSON string)
+    - 우선순위:
+      1) st.secrets["gcp_service_account"] (dict)
+      2) st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"] (string JSON)
+      3) st.secrets 중 값에 {"type":"service_account"} 포함된 dict
     """
     try:
         if "gcp_service_account" in st.secrets:
             return True
         if "GOOGLE_SERVICE_ACCOUNT_JSON" in st.secrets:
             return True
+        # 키명이 다를 수 있으니 value를 스캔
+        for _, v in st.secrets.items():
+            if isinstance(v, dict) and v.get("type") == "service_account":
+                return True
     except Exception:
         pass
     return False
@@ -118,6 +108,7 @@ def _get_credentials():
     if Credentials is None:
         return None
     try:
+        # 1) 명시 키
         if "gcp_service_account" in st.secrets:
             info = st.secrets["gcp_service_account"]
             return Credentials.from_service_account_info(info, scopes=_GOOGLE_SCOPES)
@@ -125,14 +116,44 @@ def _get_credentials():
             import json
             info = json.loads(st.secrets["GOOGLE_SERVICE_ACCOUNT_JSON"])
             return Credentials.from_service_account_info(info, scopes=_GOOGLE_SCOPES)
+        # 2) 값 스캔
+        for _, v in st.secrets.items():
+            if isinstance(v, dict) and v.get("type") == "service_account":
+                return Credentials.from_service_account_info(v, scopes=_GOOGLE_SCOPES)
     except Exception as e:
         st.error(f"서비스계정 로드 오류: {e}")
     return None
 
-def _read_dataframe_via_gspread(sheet_id: str, gid: str) -> pd.DataFrame:
+def _open_worksheet_by_gid_or_name(sh, gid_or_name: str):
+    """
+    gid_or_name 이 숫자면 get_worksheet_by_id, 아니면 이름으로 open.
+    미존재 시 첫 시트 fallback.
+    """
+    ws = None
+    try:
+        if str(gid_or_name).isdigit():
+            try:
+                ws = sh.get_worksheet_by_id(int(gid_or_name))
+            except Exception:
+                # 일부 gspread 버전 호환
+                for _ws in sh.worksheets():
+                    if int(_ws.id) == int(gid_or_name):
+                        ws = _ws
+                        break
+        else:
+            # 탭명
+            ws = sh.worksheet(gid_or_name)
+    except Exception:
+        ws = None
+
+    if ws is None:
+        ws = sh.get_worksheet(0)
+    return ws
+
+def _read_dataframe_via_gspread(sheet_id: str, gid_or_name: str) -> pd.DataFrame:
     """
     gspread를 통해 비공개 스프레드시트를 읽어 DataFrame 반환.
-    - gid: 워크시트 ID (정수 문자열)
+    - gid_or_name: 워크시트 ID(정수 문자열) 또는 탭 이름(예: 'RAW_원본')
     - 헤더는 1행으로 가정
     """
     if gspread is None:
@@ -140,27 +161,11 @@ def _read_dataframe_via_gspread(sheet_id: str, gid: str) -> pd.DataFrame:
 
     creds = _get_credentials()
     if creds is None:
-        raise RuntimeError("서비스계정 자격증명을 찾을 수 없습니다. st.secrets에 gcp_service_account 또는 GOOGLE_SERVICE_ACCOUNT_JSON을 설정하세요.")
+        raise RuntimeError("서비스계정 자격증명을 찾을 수 없습니다. st.secrets에 서비스계정 JSON을 설정하세요.")
 
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
-
-    # gspread는 get_worksheet_by_id 지원(버전 최신). 없으면 fallback.
-    ws = None
-    try:
-        ws = sh.get_worksheet_by_id(int(gid))
-    except Exception:
-        # fallback: 모든 워크시트를 탐색하며 gid가 같은 시트를 찾음
-        for _ws in sh.worksheets():
-            try:
-                if int(_ws.id) == int(gid):
-                    ws = _ws
-                    break
-            except Exception:
-                continue
-        if ws is None:
-            # 마지막 보루: 첫 시트
-            ws = sh.get_worksheet(0)
+    ws = _open_worksheet_by_gid_or_name(sh, gid_or_name)
 
     values = ws.get_all_values()
     if not values:
@@ -169,12 +174,11 @@ def _read_dataframe_via_gspread(sheet_id: str, gid: str) -> pd.DataFrame:
     header = values[0]
     rows = values[1:] if len(values) > 1 else []
     df = pd.DataFrame(rows, columns=header)
-
     return df
 
 # ===== 데이터 로드 (캐싱) =====
 @st.cache_data(ttl=600)
-def load_data(url_or_unused: str = "") -> pd.DataFrame:
+def load_data(_: str = "") -> pd.DataFrame:
     """
     데이터 로드(비공개/공개 자동 지원)
       - st.secrets에 서비스계정이 있으면 gspread로 비공개 접근
@@ -186,7 +190,8 @@ def load_data(url_or_unused: str = "") -> pd.DataFrame:
         if _has_service_account():
             df = _read_dataframe_via_gspread(SHEET_ID, GID)
         else:
-            # 공개 CSV
+            if CSV_URL is None:
+                raise RuntimeError("CSV_URL을 구성할 수 없습니다. (GID가 탭명이면 공개 CSV 접근 불가)")
             df = pd.read_csv(CSV_URL)
     except Exception as e:
         st.error(f"데이터 로드 오류: {e}")
@@ -196,14 +201,12 @@ def load_data(url_or_unused: str = "") -> pd.DataFrame:
     if "주차시작일" in df.columns:
         df["주차시작일"] = pd.to_datetime(
             df["주차시작일"].astype(str).str.strip(),
-            format="%Y. %m. %d",
-            errors="coerce"
+            format="%Y. %m. %d", errors="coerce"
         )
     if "방영시작일" in df.columns:
         df["방영시작일"] = pd.to_datetime(
             df["방영시작일"].astype(str).str.strip(),
-            format="%Y. %m. %d",
-            errors="coerce"
+            format="%Y. %m. %d", errors="coerce"
         )
 
     # --- 숫자형 데이터 변환 ---
@@ -223,77 +226,6 @@ def load_data(url_or_unused: str = "") -> pd.DataFrame:
         df["회차_numeric"] = pd.NA
 
     return df
-
-# ===== 일반 포맷팅 유틸 =====
-def fmt(v, digits=3, intlike=False):
-    """
-    숫자 포맷팅 헬퍼 (None이나 NaN은 '–'로 표시)
-    """
-    if v is None or pd.isna(v):
-        return "–"
-    return f"{v:,.0f}" if intlike else f"{v:.{digits}f}"
-
-# ===== KPI 카드 렌더링 유틸 =====
-def kpi(col, title, value):
-    """
-    Streamlit 컬럼 내에 KPI 카드를 렌더링합니다.
-    """
-    with col:
-        st.markdown(
-            f'<div class="kpi-card"><div class="kpi-title">{title}</div>'
-            f'<div class="kpi-value">{value}</div></div>',
-            unsafe_allow_html=True
-        )
-
-# ===== 페이지 라우팅 유틸 =====
-def get_current_page_default(default="Overview"):
-    """
-    URL 쿼리 파라미터(?page=...)에서 현재 페이지를 읽어옵니다.
-    없으면 default 값을 반환합니다.
-    """
-    try:
-        qp = st.query_params  # Streamlit 신버전
-        p = qp.get("page", None)
-        if p is None:
-            return default
-        return p if isinstance(p, str) else p[0]
-    except Exception:
-        qs = st.experimental_get_query_params()  # 구버전 호환
-        return (qs.get("page", [default])[0])
-
-# ===== 회차 옵션 생성 유틸 (페이지 5) =====
-def get_episode_options(df: pd.DataFrame) -> List[str]:
-    """데이터에서 사용 가능한 회차 목록 (문자열, '00' 제외, '차'/'화' 제거)을 추출합니다."""
-    
-    valid_options = []
-    # 숫자 회차 컬럼 우선 사용
-    if "회차_numeric" in df.columns:
-        unique_episodes_num = sorted([
-            int(ep) for ep in df["회차_numeric"].dropna().unique() if ep > 0 # 0보다 큰 경우만
-        ])
-        if unique_episodes_num:
-            max_ep_num = unique_episodes_num[-1]
-            for ep_num in unique_episodes_num: valid_options.append(str(ep_num))
-            # 마지막 회차 처리
-            last_ep_str_num = str(max_ep_num)
-            if last_ep_str_num in valid_options and valid_options[-1] != last_ep_str_num:
-                 valid_options.remove(last_ep_str_num); valid_options.append(last_ep_str_num)
-            if len(valid_options) > 0 and "(마지막화)" not in valid_options[-1]:
-                 valid_options[-1] = f"{valid_options[-1]} (마지막화)"
-            return valid_options
-        else: return []
-    # 숫자 회차 컬럼 없을 경우
-    elif "회차" in df.columns:
-        raw_options = sorted(df["회차"].dropna().unique())
-        for opt in raw_options:
-            # '00'으로 시작하는 것 제외
-            if not opt.startswith("00"):
-                cleaned_opt = re.sub(r"[화차]", "", opt) # '화' 또는 '차' 제거
-                if cleaned_opt.isdigit() and int(cleaned_opt) > 0: 
-                    valid_options.append(cleaned_opt)
-        # 숫자 기준으로 정렬
-        return sorted(list(set(valid_options)), key=lambda x: int(x) if x.isdigit() else float('inf')) 
-    else: return []
 # =====================================================
 #endregion
 
@@ -759,7 +691,7 @@ def get_avg_demo_pop_by_episode(df_src: pd.DataFrame, medias: List[str]) -> pd.D
 #region [ 8. 페이지 1: Overview ]
 # =====================================================
 def render_overview():
-    df = load_data(CSV_URL)
+    df = load_data()
   
     # --- 페이지 전용 필터 (메인 영역, 제목 옆에 배치) ---   
     filter_cols = st.columns(4) # [제목 | 편성필터 | 연도필터 | 월필터]
@@ -976,7 +908,7 @@ def render_overview():
 # =====================================================
 def render_ip_detail():
 
-    df_full = load_data(CSV_URL)
+    df_full = load_data()
 
     filter_cols = st.columns([3, 2, 2]) # [제목 | IP선택 | 그룹기준]
     
@@ -1635,7 +1567,7 @@ def render_heatmap(df_plot: pd.DataFrame, title: str):
 # ===== [페이지 3] 메인 렌더링 함수 =====
 def render_demographic():
     # --- 데이터 로드 ---
-    df_all = load_data(CSV_URL)
+    df_all = load_data()
 
     # --- 페이지 전용 필터 (메인 영역) ---
     ip_options = sorted(df_all["IP"].dropna().unique().tolist())
@@ -2328,7 +2260,7 @@ def render_ip_vs_ip_comparison(df_all: pd.DataFrame, ip1: str, ip2: str, kpi_per
 
 # ===== [페이지 4] 메인 렌더링 함수 =====
 def render_comparison():
-    df_all = load_data(CSV_URL)
+    df_all = load_data()
     try: 
         kpi_percentiles = get_kpi_data_for_all_ips(df_all)
     except Exception as e: 
@@ -2534,7 +2466,7 @@ def plot_episode_comparison(
 def render_episode():
     
     # --- 데이터 로드 ---
-    df_all = load_data(CSV_URL)
+    df_all = load_data()
     
     # --- [수정] 필터 메인 영역으로 이동 ---
     filter_cols = st.columns([3, 3, 2]) # [Title | Base IP | Episode]
@@ -2671,7 +2603,7 @@ def render_growth_score():
         작품명은 줄바꿈 적용(한 줄 한 작품), 가로/세로 패딩 최소화, 세로 길이 확대
       - 전체표 정렬: 종합의 '절대등급' 우선 내림차순, 동률 시 '상승등급' 높은 순
     """
-    df_all = load_data(CSV_URL).copy()
+    df_all = load_data().copy()
 
     # ---------- 설정 ----------
     EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
@@ -3167,7 +3099,7 @@ def render_growth_score_digital():
     from plotly import graph_objects as go
     import streamlit as st
 
-    df_all = load_data(CSV_URL).copy()
+    df_all = load_data().copy()
 
     # ---------- 설정 ----------
     EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
