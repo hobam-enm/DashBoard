@@ -626,10 +626,8 @@ def _set_page_query_param(page_key: str):
     except Exception:
         st.experimental_set_query_params(page=page_key)
 
-with st.sidebar:
-    st.markdown('<div class="sidebar-hr"></div>', unsafe_allow_html=True)
-    
-    def render_gradient_title(main_text: str, sub_text: str = "드라마 성과 대시보드", emoji: str = "💬"):
+# 그라디언트 타이틀 렌더 유틸 (CSS 클래스는 이미 주입되어 있어야 함)
+def render_gradient_title(main_text: str, sub_text: str = "드라마 성과 대시보드", emoji: str = "🎬"):
     st.markdown(
         f"""
         <div class="page-title-wrap">
@@ -646,13 +644,15 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-# 사용 예: 지금 "navigation" 찍던 자리에서 이 한 줄로 교체
-render_gradient_title("유튜브 댓글분석", "AI 챗봇")
+with st.sidebar:
+    st.markdown('<div class="sidebar-hr"></div>', unsafe_allow_html=True)
+
+    # 🔹 제목: 드라마 성과 대시보드 (아이콘: 🎬)
+    render_gradient_title("드라마 성과 대시보드", "AI 분석 대시보드", emoji="🎬")
 
     st.caption("문의 : 디지털마케팅팀 데이터파트")
 
-    # 버튼을 예전 <a.nav-item>처럼: 활성은 primary, 나머지는 secondary
-    # NAV_ITEMS 예: {"Overview":"Overview", "IP":"IP 성과", ...}
+    # 🔹 네비게이션 버튼 (리로드 없이 전환)
     for key, label in NAV_ITEMS.items():
         is_active = (current_page == key)
         btn_label = f"{'✅ ' if is_active else ''}{label}"
@@ -660,17 +660,15 @@ render_gradient_title("유튜브 댓글분석", "AI 챗봇")
             btn_label,
             key=f"navbtn__{key}",
             use_container_width=True,
-            type=("primary" if is_active else "secondary")  # ← 활성 하이라이트
+            type=("primary" if is_active else "secondary")  # 활성 하이라이트
         )
         if clicked:
             st.session_state["page"] = key
             _set_page_query_param(key)
-            # 세션 유지한 채로 리런
-            if hasattr(st, "rerun"):
-                st.rerun()
-            else:
-                st.experimental_rerun()
+            if hasattr(st, "rerun"): st.rerun()
+            else: st.experimental_rerun()
 #endregion
+
 
 
 #region [ 6. 공통 집계 유틸: KPI 계산 ]
