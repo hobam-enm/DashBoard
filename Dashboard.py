@@ -642,10 +642,10 @@ with st.sidebar:
     st.markdown('<div class="sidebar-hr"></div>', unsafe_allow_html=True)
     render_gradient_title("드라마 성과 대시보드", emoji="")
     st.markdown(
-    "<p style='font-size:11px; color:gray;'>문의 : 미디어)디지털마케팅팀 데이터파트</p>",
+    "<p style='font-size:12px; color:gray;'>문의 : 미디어)디지털마케팅팀 데이터파트</p>",
     unsafe_allow_html=True
     )
-    st.markdown("<hr style='border:1px solid #eee; margin:6px 0;'>", unsafe_allow_html=True)
+    st.markdown("<hr style='border:1px solid #eee; margin:0px 0;'>", unsafe_allow_html=True)
 
     # 🔹 네비게이션 버튼 (리로드 없이 전환)
     for key, label in NAV_ITEMS.items():
