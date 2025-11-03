@@ -599,7 +599,8 @@ def _set_page_query_param(page_key: str):
 
 with st.sidebar:
     st.markdown('<div class="sidebar-hr"></div>', unsafe_allow_html=True)
-    st.markdown("### 🧭 Navigation")
+    st.markdown("## 드라마 성과 대시보드")
+    st.caption("문의 : 디지털마케팅팀 데이터파트")
 
     # 버튼을 예전 <a.nav-item>처럼: 활성은 primary, 나머지는 secondary
     # NAV_ITEMS 예: {"Overview":"Overview", "IP":"IP 성과", ...}
