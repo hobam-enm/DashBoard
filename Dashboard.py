@@ -563,22 +563,50 @@ hr {
 
 #region [ 5. 사이드바 네비게이션 ]
 # =====================================================
+# URL 쿼리로 현재 페이지 읽기 (없으면 Overview)
 current_page = get_current_page_default("Overview")
+
+# 세션에도 현재 페이지 반영(최초 1회 or 쿼리 변경 시)
 st.session_state["page"] = current_page
+
+# 안전한 쿼리 갱신 헬퍼 (리로드 없이 URL만 갱신)
+def _set_page_query_param(page_key: str):
+    try:
+        # 신버전
+        qp = st.query_params
+        qp["page"] = page_key
+        st.query_params = qp
+    except Exception:
+        # 구버전 호환
+        st.experimental_set_query_params(page=page_key)
 
 with st.sidebar:
     st.markdown('<hr style="margin:0px 0; border:1px solid #ccc;">', unsafe_allow_html=True)
     st.markdown('<div class="sidebar-logo">📊 DashBoard</div>', unsafe_allow_html=True)
     st.markdown('<hr style="margin:0px 0; border:1px solid #ccc;">', unsafe_allow_html=True)
 
-    # ===== 네비게이션 아이템 렌더링 (v2.0 NAV_ITEMS 사용) =====
+    # >>> 기존의 <a href="?page=..."> 제거! (리로드 발생)
+    # 버튼/토글 기반 내비로 교체 (세션 유지)
     for key, label in NAV_ITEMS.items():
-        active_class = "active" if current_page == key else ""
-        st.markdown(
-            f'<a class="nav-item {active_class}" href="?page={key}" target="_self">{label}</a>',
-            unsafe_allow_html=True
-        )
+        is_active = (current_page == key)
+        # 스타일 유지용 래퍼
+        btn_placeholder = st.empty()
+        # 버튼 클릭 시: 세션/URL만 업데이트 → rerun (세션 유지)
+        if btn_placeholder.button(
+            label if not is_active else f"✅ {label}",
+            key=f"navbtn__{key}",
+            use_container_width=True
+        ):
+            st.session_state["page"] = key
+            _set_page_query_param(key)  # URL 업데이트(리로드 없음)
+            # rerun (세션 유지됨 → 인증 상태 유지)
+            if hasattr(st, "rerun"):
+                st.rerun()
+            else:
+                st.experimental_rerun()
+
 #endregion
+
 
 #region [ 6. 공통 집계 유틸: KPI 계산 ]
 # =====================================================
