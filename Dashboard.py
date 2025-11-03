@@ -139,11 +139,6 @@ if not check_password_with_token():
 
 #region [ 2. 기본 설정 및 공통 상수 ]
 # =====================================================
-# ◀◀◀ [수정] 페이지 설정 원본 유지
-st.set_page_config(page_title="Overview Dashboard", layout="wide", initial_sidebar_state="expanded")
-
-
-
 
 st.markdown("""
 <style>
