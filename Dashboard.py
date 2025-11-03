@@ -24,7 +24,7 @@ from google.oauth2.service_account import Credentials
 #region [ 1-0. 페이지 설정 — 반드시 첫 번째 Streamlit 명령 ]
 # =====================================================
 st.set_page_config(
-    page_title="Overview Dashboard",
+    page_title="Drama Dashboard",
     layout="wide",
     initial_sidebar_state="expanded"
 )
