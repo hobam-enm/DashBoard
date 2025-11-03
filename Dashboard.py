@@ -1347,7 +1347,7 @@ def render_ip_detail():
                 f"<div class='kpi-card'>"
                 f"<div class='kpi-title'>{title}</div>"
                 f"<div class='kpi-value'>{main}</div>"
-                f"{sublines_html(prog_label, (None, 0), value, base_val)}"
+                f"{sublines_html(prog_label, rank_tuple, value, base_val)}"
                 f"</div>",
                 unsafe_allow_html=True
             )
