@@ -18,100 +18,98 @@ import gspread
 from google.oauth2.service_account import Credentials
 #endregion
 
-#region [ 1-1. 입장게이트 ]
-# =====================================================
+#region [ 1-1. 입장게이트 - URL 토큰 지속 인증 ]
+import time, uuid
+import streamlit as st
 
-# 인증 키 이름(보호 대상)
-AUTH_KEY  = "__auth_ok__"
-AUTH_TIME = "__auth_ts__"
-PROTECT_KEYS = {AUTH_KEY, AUTH_TIME}
+AUTH_TTL = 12*3600  # 12시간 유지(원하면 변경)
+AUTH_QUERY_KEY = "auth"
 
-# Streamlit 버전 호환 rerun
-def _rerun():
-    if hasattr(st, "rerun"):
-        st.rerun()
-    else:
-        st.experimental_rerun()
+@st.cache_resource
+def _auth_store():
+    # token -> {"ts": issued_at}
+    return {}
 
-def safe_clear_state(except_keys: set[str] = PROTECT_KEYS):
-    """
-    st.session_state.clear() 대신 사용할 것.
-    인증 관련 키(AUTH_KEY, AUTH_TIME)는 보존한다.
-    """
-    keep = {k: st.session_state.get(k) for k in except_keys if k in st.session_state}
-    st.session_state.clear()
-    for k, v in keep.items():
-        st.session_state[k] = v
+def _now(): return int(time.time())
 
-def set_authenticated():
-    st.session_state[AUTH_KEY] = True
-    st.session_state[AUTH_TIME] = time.time()
+def _issue_token():
+    return uuid.uuid4().hex
 
-def is_authenticated(ttl_sec: int | None = None) -> bool:
-    ok = bool(st.session_state.get(AUTH_KEY, False))
-    if not ok:
+def _set_auth_query(token: str):
+    try:
+        qp = st.query_params
+        qp[AUTH_QUERY_KEY] = token
+        st.query_params = qp
+    except Exception:
+        st.experimental_set_query_params(**{AUTH_QUERY_KEY: token})
+
+def _get_auth_query() -> str | None:
+    qp = st.query_params
+    return qp.get(AUTH_QUERY_KEY)
+
+def _validate_token(token: str) -> bool:
+    store = _auth_store()
+    ent = store.get(token)
+    if not ent: return False
+    if _now() - ent["ts"] > AUTH_TTL:
+        # 만료
+        del store[token]
         return False
-    if ttl_sec:
-        ts = st.session_state.get(AUTH_TIME, 0)
-        if ts and time.time() - ts > ttl_sec:
-            # TTL 만료
-            st.session_state[AUTH_KEY] = False
-            return False
     return True
 
-def check_password_simple(ttl_sec: int | None = None) -> bool:
-    """
-    st.secrets['DASHBOARD_PASSWORD']와 비교하는 간단 게이트.
-    ttl_sec 지정 시(예: 12*3600) 일정 시간 후 자동 만료.
-    """
-    # 세션 키 초기 보장(값을 False로 덮지 않도록 주의)
-    if AUTH_KEY not in st.session_state:
-        st.session_state[AUTH_KEY] = False
+def _persist_auth(token: str):
+    store = _auth_store()
+    store[token] = {"ts": _now()}
 
-    # 이미 인증되었는지 확인(+TTL)
-    if is_authenticated(ttl_sec=ttl_sec):
+def _logout():
+    # URL 토큰 제거 + 서버 저장소에서 삭제
+    token = _get_auth_query()
+    if token:
+        store = _auth_store()
+        store.pop(token, None)
+    # URL에서 auth 제거
+    qp = st.query_params
+    if AUTH_QUERY_KEY in qp:
+        del qp[AUTH_QUERY_KEY]
+        st.query_params = qp
+    # 세션도 초기화
+    st.session_state.clear()
+    if hasattr(st, "rerun"): st.rerun()
+    else: st.experimental_rerun()
+
+def check_password_with_token() -> bool:
+    # 1) URL 토큰이 유효하면 통과
+    token = _get_auth_query()
+    if token and _validate_token(token):
         return True
 
-    # 로그인 UI (사이드바)
+    # 2) 아니면 비밀번호 입력
     with st.sidebar:
         st.markdown("## 🔐 로그인")
-        pwd_input = st.text_input("비밀번호를 입력하세요", type="password", key="pwd_input")
-        c1, c2 = st.columns(2)
-        login_clicked = c1.button("로그인")
-        reset_clicked = c2.button("초기화")
-
-    if reset_clicked:
-        # 전체 초기화가 필요해도 인증키는 보존
-        safe_clear_state()
-        _rerun()
-
-    if login_clicked:
+        pwd = st.text_input("비밀번호를 입력하세요", type="password", key="__pwd__")
+        login = st.button("로그인")
+    if login:
         secret_pwd = st.secrets.get("DASHBOARD_PASSWORD")
-        if not secret_pwd:
-            st.sidebar.error("관리자: 시크릿에 DASHBOARD_PASSWORD가 없습니다. 저장 후 앱 재가동하세요.")
-            return False
-
-        if isinstance(pwd_input, str) and pwd_input.strip() == str(secret_pwd).strip():
-            set_authenticated()
-            _rerun()
+        if secret_pwd and pwd == str(secret_pwd):
+            new_token = _issue_token()
+            _persist_auth(new_token)
+            _set_auth_query(new_token)  # URL에 토큰 부여 → 새로고침 후에도 유지
+            if hasattr(st, "rerun"): st.rerun()
+            else: st.experimental_rerun()
         else:
             st.sidebar.warning("비밀번호가 일치하지 않습니다.")
     return False
 
-# ✅ 앱 본문 실행 전 반드시 게이트 통과 확인
-#    TTL을 원하면 예: ttl_sec=12*3600 (12시간)
-if not check_password_simple(ttl_sec=None):
+# 사용
+if not check_password_with_token():
     st.stop()
 
-# (선택) 로그아웃 버튼: 인증키만 보존 제외하고 모두 초기화
+# (선택) 로그아웃 버튼
 # with st.sidebar:
 #     if st.button("로그아웃"):
-#         # 로그아웃은 인증까지 끊어야 하므로 clear 전 보존 X
-#         st.session_state.clear()
-#         _rerun()
-
-# --- END: simple password gate ---
+#         _logout()
 #endregion
+
 
 
 #region [ 2. 기본 설정 및 공통 상수 ]
