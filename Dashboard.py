@@ -6,7 +6,7 @@
 import datetime
 import re
 from typing import List, Dict, Any, Optional 
-import time
+import time, uuid
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -19,8 +19,6 @@ from google.oauth2.service_account import Credentials
 #endregion
 
 #region [ 1-1. 입장게이트 - URL 토큰 지속 인증 ]
-import time, uuid
-import streamlit as st
 
 AUTH_TTL = 12*3600  # 12시간 유지(원하면 변경)
 AUTH_QUERY_KEY = "auth"
