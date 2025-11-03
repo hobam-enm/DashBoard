@@ -580,29 +580,29 @@ section[data-testid="stSidebar"] .stButton [data-testid="baseButton-primary"]:ho
 </style>
 """, unsafe_allow_html=True)
 
+# [ 4. 공통 스타일 ] 맨 아래쪽에 이 블록을 추가(또는 기존 page-title 스타일을 교체)
 st.markdown("""
 <style>
-/* ===== Gradient Title ===== */
+/* ==== Sidebar Gradient Title: 1줄, 줄바꿈 없이, 폭 좁아도 예쁘게 ==== */
 .page-title-wrap{
-  display:flex; align-items:center; gap:10px; margin:2px 0 14px 0;
+  display:flex; align-items:center; gap:8px; margin:4px 0 10px 0;
 }
-.page-title-emoji{
-  font-size: 22px; line-height:1; filter: drop-shadow(0 1px 0 rgba(0,0,0,0.05));
-}
+.page-title-emoji{ font-size:20px; line-height:1; }
 .page-title-main{
-  font-size: 26px; font-weight: 800; letter-spacing: -0.2px; line-height: 1.1;
+  /* clamp(min, preferred, max) → 사이드바가 좁아도 자연스레 줄어듦 */
+  font-size: clamp(18px, 2.2vw, 24px);
+  font-weight: 800; letter-spacing:-0.2px; line-height:1.15;
   background: linear-gradient(90deg,#6A5ACD 0%, #A663CC 40%, #FF7A8A 75%, #FF8A3D 100%);
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-}
-.page-title-dot{ opacity:.35; margin:0 6px; font-weight:700; }
-.page-title-sub{
-  font-size: 20px; font-weight: 800; color: #FF8A3D; letter-spacing:-0.2px;
+  -webkit-background-clip:text; background-clip:text; color:transparent;
+  white-space: nowrap;             /* 줄바꿈 금지 */
+  overflow: hidden;                /* 넘치면 숨김 */
+  text-overflow: ellipsis;         /* … 처리 */
+  max-width: 100%;                 /* 사이드바 폭에 맞춰 자르기 */
 }
 
-/* 반응형 살짝 */
-@media (max-width: 640px){
-  .page-title-main{ font-size: 22px; }
-  .page-title-sub { font-size: 18px; }
+/* 사이드바 버튼도 약간 컴팩트하게(필요 시) */
+section[data-testid="stSidebar"] .stButton > button{
+  padding: 10px 12px; font-weight: 600;
 }
 </style>
 """, unsafe_allow_html=True)
@@ -626,19 +626,13 @@ def _set_page_query_param(page_key: str):
     except Exception:
         st.experimental_set_query_params(page=page_key)
 
-# 그라디언트 타이틀 렌더 유틸 (CSS 클래스는 이미 주입되어 있어야 함)
-def render_gradient_title(main_text: str, sub_text: str = "드라마 성과 대시보드", emoji: str = "🎬"):
+# 그라디언트 타이틀: 메인 텍스트만(서브타이틀 제거)
+def render_gradient_title(main_text: str, emoji: str = "🎬"):
     st.markdown(
         f"""
         <div class="page-title-wrap">
           <span class="page-title-emoji">{emoji}</span>
-          <div>
-            <div class="page-title-main">{main_text}</div>
-            <div>
-              <span class="page-title-dot">·</span>
-              <span class="page-title-sub">{sub_text}</span>
-            </div>
-          </div>
+          <span class="page-title-main">{main_text}</span>
         </div>
         """,
         unsafe_allow_html=True,
@@ -646,10 +640,7 @@ def render_gradient_title(main_text: str, sub_text: str = "드라마 성과 대�
 
 with st.sidebar:
     st.markdown('<div class="sidebar-hr"></div>', unsafe_allow_html=True)
-
-    # 🔹 제목: 드라마 성과 대시보드 (아이콘: 🎬)
-    render_gradient_title("드라마 성과 대시보드",  emoji="🎬")
-
+    render_gradient_title("드라마 성과 대시보드", emoji="🎬")
     st.caption("문의 : 디지털마케팅팀 데이터파트")
 
     # 🔹 네비게이션 버튼 (리로드 없이 전환)
