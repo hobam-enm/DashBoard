@@ -6,7 +6,7 @@
 import datetime
 import re
 from typing import List, Dict, Any, Optional 
-
+import time
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -21,38 +21,95 @@ from google.oauth2.service_account import Credentials
 #region [ 1-1. 입장게이트 ]
 # =====================================================
 
-# rerun-safe helper (Streamlit 버전 호환)
+# 인증 키 이름(보호 대상)
+AUTH_KEY  = "__auth_ok__"
+AUTH_TIME = "__auth_ts__"
+PROTECT_KEYS = {AUTH_KEY, AUTH_TIME}
+
+# Streamlit 버전 호환 rerun
 def _rerun():
-    import streamlit as st
     if hasattr(st, "rerun"):
         st.rerun()
     else:
         st.experimental_rerun()
 
-def check_password_simple():
-    """st.secrets['DASHBOARD_PASSWORD'] 와 비교하는 단순 방식"""
-    import streamlit as st
-    if "authenticated" not in st.session_state:
-        st.session_state["authenticated"] = False
-    if st.session_state["authenticated"]:
+def safe_clear_state(except_keys: set[str] = PROTECT_KEYS):
+    """
+    st.session_state.clear() 대신 사용할 것.
+    인증 관련 키(AUTH_KEY, AUTH_TIME)는 보존한다.
+    """
+    keep = {k: st.session_state.get(k) for k in except_keys if k in st.session_state}
+    st.session_state.clear()
+    for k, v in keep.items():
+        st.session_state[k] = v
+
+def set_authenticated():
+    st.session_state[AUTH_KEY] = True
+    st.session_state[AUTH_TIME] = time.time()
+
+def is_authenticated(ttl_sec: int | None = None) -> bool:
+    ok = bool(st.session_state.get(AUTH_KEY, False))
+    if not ok:
+        return False
+    if ttl_sec:
+        ts = st.session_state.get(AUTH_TIME, 0)
+        if ts and time.time() - ts > ttl_sec:
+            # TTL 만료
+            st.session_state[AUTH_KEY] = False
+            return False
+    return True
+
+def check_password_simple(ttl_sec: int | None = None) -> bool:
+    """
+    st.secrets['DASHBOARD_PASSWORD']와 비교하는 간단 게이트.
+    ttl_sec 지정 시(예: 12*3600) 일정 시간 후 자동 만료.
+    """
+    # 세션 키 초기 보장(값을 False로 덮지 않도록 주의)
+    if AUTH_KEY not in st.session_state:
+        st.session_state[AUTH_KEY] = False
+
+    # 이미 인증되었는지 확인(+TTL)
+    if is_authenticated(ttl_sec=ttl_sec):
         return True
 
-    st.sidebar.markdown("## 로그인")
-    pwd_input = st.sidebar.text_input("비밀번호를 입력하세요", type="password", key="pwd_input")
-    if st.sidebar.button("로그인"):
+    # 로그인 UI (사이드바)
+    with st.sidebar:
+        st.markdown("## 🔐 로그인")
+        pwd_input = st.text_input("비밀번호를 입력하세요", type="password", key="pwd_input")
+        c1, c2 = st.columns(2)
+        login_clicked = c1.button("로그인")
+        reset_clicked = c2.button("초기화")
+
+    if reset_clicked:
+        # 전체 초기화가 필요해도 인증키는 보존
+        safe_clear_state()
+        _rerun()
+
+    if login_clicked:
         secret_pwd = st.secrets.get("DASHBOARD_PASSWORD")
-        if secret_pwd is None:
-            st.sidebar.error("앱 관리자: Streamlit 시크릿에 DASHBOARD_PASSWORD가 설정되어 있지 않습니다.")
-        elif pwd_input == secret_pwd:
-            st.session_state["authenticated"] = True
+        if not secret_pwd:
+            st.sidebar.error("관리자: 시크릿에 DASHBOARD_PASSWORD가 없습니다. 저장 후 앱 재가동하세요.")
+            return False
+
+        if isinstance(pwd_input, str) and pwd_input.strip() == str(secret_pwd).strip():
+            set_authenticated()
             _rerun()
         else:
             st.sidebar.warning("비밀번호가 일치하지 않습니다.")
     return False
 
-if not check_password_simple():
-    import streamlit as st
+# ✅ 앱 본문 실행 전 반드시 게이트 통과 확인
+#    TTL을 원하면 예: ttl_sec=12*3600 (12시간)
+if not check_password_simple(ttl_sec=None):
     st.stop()
+
+# (선택) 로그아웃 버튼: 인증키만 보존 제외하고 모두 초기화
+# with st.sidebar:
+#     if st.button("로그아웃"):
+#         # 로그아웃은 인증까지 끊어야 하므로 clear 전 보존 X
+#         st.session_state.clear()
+#         _rerun()
+
 # --- END: simple password gate ---
 #endregion
 
