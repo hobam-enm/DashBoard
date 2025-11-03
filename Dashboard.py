@@ -642,7 +642,7 @@ with st.sidebar:
     st.markdown('<div class="sidebar-hr"></div>', unsafe_allow_html=True)
     render_gradient_title("드라마 성과 대시보드", emoji="")
     st.markdown(
-    "<p style='font-size:9px; color:gray;'>문의 : 미디어)디지털마케팅팀 데이터파트</p>",
+    "<p style='font-size:11px; color:gray;'>문의 : 미디어)디지털마케팅팀 데이터파트</p>",
     unsafe_allow_html=True
 )
 
