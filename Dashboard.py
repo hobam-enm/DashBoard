@@ -648,7 +648,7 @@ with st.sidebar:
     st.markdown('<div class="sidebar-hr"></div>', unsafe_allow_html=True)
 
     # 🔹 제목: 드라마 성과 대시보드 (아이콘: 🎬)
-    render_gradient_title("드라마 성과 대시보드", "AI 분석 대시보드", emoji="🎬")
+    render_gradient_title("드라마 성과 대시보드",  emoji="🎬")
 
     st.caption("문의 : 디지털마케팅팀 데이터파트")
 
