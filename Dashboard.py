@@ -419,8 +419,8 @@ section[data-testid="stSidebar"] {
     padding-top: 1rem;
     padding-left: 0.5rem;
     padding-right: 0.5rem;
-    min-width:300px !important;
-    max-width:300px !important;
+    min-width:360px !important;
+    max-width:360px !important;
 }
 /* 사이드바 접힘 토글 버튼 숨김 */
 div[data-testid="collapsedControl"] { display:none !important; }
@@ -641,7 +641,7 @@ def render_gradient_title(main_text: str, emoji: str = "🎬"):
 with st.sidebar:
     st.markdown('<div class="sidebar-hr"></div>', unsafe_allow_html=True)
     render_gradient_title("드라마 성과 대시보드", emoji="🎬")
-    st.caption("문의 : 디지털마케팅팀 데이터파트")
+    st.caption("문의 : 미디어)디지털마케팅팀 데이터파트")
 
     # 🔹 네비게이션 버튼 (리로드 없이 전환)
     for key, label in NAV_ITEMS.items():
