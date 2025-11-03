@@ -376,28 +376,28 @@ def get_episode_options(df: pd.DataFrame) -> List[str]:
 
 #region [ 4. 공통 스타일 ]
 # =====================================================
-# CSS 수정: 전체적인 색상 톤, 폰트, 카드 디자인을 더 세련되게 변경
+# CSS 수정: 전체적인 색상 톤, 폰트, 카드 디자인, 네비 버튼 스킨
 st.markdown("""
 <style>
 /* --- 전체 앱 배경 --- */
 [data-testid="stAppViewContainer"] {
     background-color: #f8f9fa; /* 매우 연한 회색 배경 */
 }
-/* --- ◀◀◀ [수정] st.container(border=True) 스타일 오버라이드 --- */
+
+/* --- st.container(border=True) 카드 스타일 --- */
 div[data-testid="stVerticalBlockBorderWrapper"] {
     background-color: #ffffff;
     border: 1px solid #e9e9e9;
     border-radius: 10px;
     box-shadow: 0 2px 5px rgba(0,0,0,0.03);
-    padding: 1.25rem 1.25rem 1.5rem 1.25rem; /* 20px 20px 25px 20px */
-    margin-bottom: 1.5rem; /* 카드 간 세로 간격 */
+    padding: 1.25rem 1.25rem 1.5rem 1.25rem;
+    margin-bottom: 1.5rem;
 }
-
 
 /* --- Sidebar 배경/패딩 + 항상 펼침(폭 고정) --- */
 section[data-testid="stSidebar"] {
-    background: #ffffff; /* 흰색 배경 */
-    border-right: 1px solid #e0e0e0; /* 연한 경계선 */
+    background: #ffffff;
+    border-right: 1px solid #e0e0e0;
     padding-top: 1rem;
     padding-left: 0.5rem;
     padding-right: 0.5rem;
@@ -409,57 +409,53 @@ div[data-testid="collapsedControl"] { display:none !important; }
 
 /* --- 로고 --- */
 .sidebar-logo{
-    font-size: 28px; /* 크기 살짝 조정 */
-    font-weight: 700; 
-    color: #1a1a1a; /* 더 진한 검은색 */
-    text-align: center; 
+    font-size: 28px;
+    font-weight: 700;
+    color: #1a1a1a;
+    text-align: center;
     margin-bottom: 10px;
     padding-top: 10px;
 }
 
-/* --- 네비게이션 아이템 --- */
+/* --- (레거시) 네비게이션 앵커 아이템 --- */
 .nav-item{
     display: block;
     width: 100%;
-    padding: 12px 15px; /* 패딩 조정 */
-    color: #333 !important; /* 기본 텍스트 색상 */
-    background: #f1f3f5; /* 연한 회색 배경 */
+    padding: 12px 15px;
+    color: #333 !important;
+    background: #f1f3f5;
     text-decoration: none !important;
-    font-weight: 600; /* 폰트 굵기 */
-    border-radius: 8px; /* 둥근 모서리 */
-    margin-bottom: 5px; /* 아이템간 간격 */
+    font-weight: 600;
+    border-radius: 8px;
+    margin-bottom: 5px;
     text-align: center;
     transition: background-color 0.2s ease, color 0.2s ease;
 }
 .nav-item:hover{
-    background: #e9ecef; /* 호버 시 더 진한 회색 */
+    background: #e9ecef;
     color: #000 !important;
     text-decoration: none;
 }
 .active{
-    background: #004a99; /* 전문적인 다크 블루 */
+    background: #004a99;
     color: #ffffff !important;
     text-decoration: none;
     font-weight: 700;
 }
 .active:hover{
-    background: #003d80; /* 호버 시 살짝 더 어둡게 */
+    background: #003d80;
     color: #ffffff !important;
 }
 
-/* --- ◀◀◀ [삭제] .module-card --- */
-/* (st.container(border=True)가 대체) */
-
-
-/* --- KPI 카드 (모듈형 카드와 스타일 통일) --- */
+/* --- KPI 카드 --- */
 .kpi-card {
-  background: #ffffff; /* 깨끗한 흰색 배경 */
-  border: 1px solid #e9e9e9; /* 매우 연한 테두리 */
-  border-radius: 10px; /* 둥근 모서리 */
-  padding: 20px 15px; /* 상하 여백 증가 */
+  background: #ffffff;
+  border: 1px solid #e9e9e9;
+  border-radius: 10px;
+  padding: 20px 15px;
   text-align: center;
-  box-shadow: 0 2px 5px rgba(0,0,0,0.03); /* 매우 미세한 그림자 */
-  height: 100%; /* 컬럼 내 높이 통일 */
+  box-shadow: 0 2px 5px rgba(0,0,0,0.03);
+  height: 100%;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -467,63 +463,32 @@ div[data-testid="collapsedControl"] { display:none !important; }
 .kpi-title { 
     font-size: 15px; 
     font-weight: 600; 
-    margin-bottom: 10px; /* 값과의 간격 증가 */
+    margin-bottom: 10px; 
     color: #444; 
 }
 .kpi-value { 
-    font-size: 28px; /* 폰트 크기 증가 */
-    font-weight: 700; /* 폰트 굵기 감소 */
-    color: #000; /* 더 진한 검은색 */
+    font-size: 28px; 
+    font-weight: 700; 
+    color: #000; 
     line-height: 1.2;
 }
 
-/* --- [페이지 2] KPI 서브 라인 스타일 --- */
-.kpi-subwrap { 
-    margin-top: 10px; /* 간격 증가 */
-    line-height: 1.4; 
-}
-.kpi-sublabel { 
-    font-size: 12px; /* 폰트 크기 통일 */
-    font-weight: 500; /* 폰트 굵기 */
-    color: #555; 
-    letter-spacing: 0.1px; 
-    margin-right: 6px; 
-}
-.kpi-substrong { 
-    font-size: 14px; 
-    font-weight: 700; 
-    color: #111; 
-}
-.kpi-subpct { 
-    font-size: 14px; 
-    font-weight: 700; 
-}
+/* --- KPI 서브 라인 --- */
+.kpi-subwrap { margin-top: 10px; line-height: 1.4; }
+.kpi-sublabel { font-size: 12px; font-weight: 500; color: #555; letter-spacing: 0.1px; margin-right: 6px; }
+.kpi-substrong { font-size: 14px; font-weight: 700; color: #111; }
+.kpi-subpct { font-size: 14px; font-weight: 700; }
 
 /* --- AgGrid 공통 --- */
-.ag-theme-streamlit { 
-    font-size: 13px; /* 기본 폰트 크기 살짝 키움 */
-    /* border: none !important; */ /* ◀◀◀ [삭제] 컨테이너가 테두리 관리 */
-}
-.ag-theme-streamlit .ag-root-wrapper {
-    border-radius: 8px; /* AgGrid 자체의 모서리도 둥글게 */
-}
-/* --- ◀◀◀ [유지] AgGrid 호버 (아이디어 #4) --- */
-.ag-theme-streamlit .ag-row-hover {
-    background-color: #f5f8ff !important; /* 연한 파란색 배경 */
-}
-/* AgGrid 헤더 */
-.ag-theme-streamlit .ag-header-cell-label {
-    justify-content: center !important;
-}
-.ag-theme-streamlit .centered-header .ag-header-cell-label {
-    justify-content: center !important;
-}
-.ag-theme-streamlit .centered-header .ag-sort-indicator-container {
-    margin-left: 4px;
-}
+.ag-theme-streamlit { font-size: 13px; }
+.ag-theme-streamlit .ag-root-wrapper { border-radius: 8px; }
+.ag-theme-streamlit .ag-row-hover { background-color: #f5f8ff !important; }
+.ag-theme-streamlit .ag-header-cell-label { justify-content: center !important; }
+.ag-theme-streamlit .centered-header .ag-header-cell-label { justify-content: center !important; }
+.ag-theme-streamlit .centered-header .ag-sort-indicator-container { margin-left: 4px; }
 .ag-theme-streamlit .bold-header .ag-header-cell-text { 
     font-weight: 700 !important; 
-    font-size: 13px; /* 폰트 크기 명시 */
+    font-size: 13px; 
     color: #111;
 }
 
@@ -532,85 +497,72 @@ div[data-testid="collapsedControl"] { display:none !important; }
     font-size: 20px; 
     font-weight: 700; 
     color: #111; 
-    margin: 0 0 10px 0; /* 카드 상단에 붙도록 마진 조정 */
+    margin: 0 0 10px 0;
     padding-bottom: 0;
-    border-bottom: none; /* 밑줄 제거 */
+    border-bottom: none;
 }
 
 /* --- Streamlit 기본 요소 미세 조정 --- */
-div[data-testid="stMultiSelect"], div[data-testid="stSelectbox"] {
-    margin-top: -10px; 
-}
-h3 { /* 메인 페이지 타이틀 */
-    margin-top: -15px;
-    margin-bottom: 10px; /* 타이틀과 카드 간 간격 */
-}
-h4 { /* 페이지 내 부제목 (예: 주요 작품 성과) */
-    font-weight: 700;
-    color: #111;
-    margin-top: 0rem; /* ◀◀◀ [수정] 컨테이너 내부 여백이 있으므로 마진 제거 */
-    margin-bottom: 0.5rem;
-}
-/* 구분선 (st.divider) */
-hr {
-    margin: 1.5rem 0; /* 상하 여백 증가 */
-    background-color: #e0e0e0;
-}
+div[data-testid="stMultiSelect"], div[data-testid="stSelectbox"] { margin-top: -10px; }
+h3 { margin-top: -15px; margin-bottom: 10px; }
+h4 { font-weight: 700; color: #111; margin-top: 0rem; margin-bottom: 0.5rem; }
+hr { margin: 1.5rem 0; background-color: #e0e0e0; }
 
-# 사이드바 네비 버튼을 기존 <a.nav-item>처럼 보이게 커스텀
-st.markdown("""
-<style>
-/* 사이드바 전체 여백 조정(선택) */
+/* =====================================================
+   버튼 기반 사이드바 네비게이션 스킨 (리로드 없는 내비)
+   기존 .nav-item 룩&필을 버튼에 이식
+   ===================================================== */
 section[data-testid="stSidebar"] .block-container { padding-top: 0.75rem; }
 
 /* 공통 버튼 스타일 */
 section[data-testid="stSidebar"] .stButton > button {
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid var(--outline, #DCDCDC);
-  background: #ffffff;
-  color: #222;
+  background: #f1f3f5;
+  color: #333;
   font-weight: 600;
-  padding: 10px 12px;
+  padding: 12px 15px;
   margin: 6px 0 0 0;
-  box-shadow: 0 0 0 0 rgba(0,0,0,0);
-  transition: all .12s ease-in-out;
+  box-shadow: none;
+  width: 100%;
+  transition: background-color .12s ease-in-out, border-color .12s ease-in-out, color .12s ease-in-out;
 }
 
 /* hover */
 section[data-testid="stSidebar"] .stButton > button:hover {
   border-color: #B9B9B9;
-  background: #fafafa;
+  background: #e9ecef;
+  color: #000;
 }
 
 /* 비활성(secondary) */
 section[data-testid="stSidebar"] .stButton [data-testid="baseButton-secondary"] {
   border: 1px solid #E5E7EB;
-  background: #ffffff;
-  color: #374151;
+  background: #f1f3f5;
+  color: #333;
 }
 
-/* 활성(Primary) — 기존 active .nav-item 느낌 */
+/* 활성(Primary) — 기존 .active 느낌 */
 section[data-testid="stSidebar"] .stButton [data-testid="baseButton-primary"] {
-  background: linear-gradient(0deg, #2563EB, #2563EB);
+  background: #004a99;
   color: #fff;
-  border: 1px solid #2563EB;
-  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.25);
+  border: 1px solid #004a99;
+  box-shadow: 0 4px 10px rgba(0, 74, 153, 0.25);
 }
 
 /* 활성 hover */
 section[data-testid="stSidebar"] .stButton [data-testid="baseButton-primary"]:hover {
   filter: brightness(1.02);
+  background: #003d80;
+  border-color: #003d80;
 }
 
-/* 사이드바 구분선(선택) */
-.sidebar-hr {
-  margin: 8px 0 12px 0;
-  border-top: 1px solid #E5E7EB;
-}
+/* 사이드바 구분선 */
+.sidebar-hr { margin: 8px 0 12px 0; border-top: 1px solid #E5E7EB; }
 </style>
 """, unsafe_allow_html=True)
-
 #endregion
+
 
 #region [ 5. 사이드바 네비게이션 ]
 # =====================================================
