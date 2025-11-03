@@ -3,10 +3,12 @@
 
 #region [ 1. 라이브러리 임포트 ]
 # =====================================================
+import os
 import datetime
 import re
 from typing import List, Dict, Any, Optional 
 import time, uuid
+
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -18,22 +20,43 @@ import gspread
 from google.oauth2.service_account import Credentials
 #endregion
 
-#region [ 1-1. 입장게이트 - URL 토큰 지속 인증 ]
 
-AUTH_TTL = 12*3600  # 12시간 유지(원하면 변경)
-AUTH_QUERY_KEY = "auth"
+#region [ 1-0. 페이지 설정 — 반드시 첫 번째 Streamlit 명령 ]
+# =====================================================
+st.set_page_config(
+    page_title="Overview Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+#endregion
+
+
+#region [ 1-1. 입장게이트 - URL 토큰 지속 인증 ]
+# =====================================================
+# 새로고침/재실행에도 URL ?auth=토큰 으로 로그인 유지
+AUTH_TTL = 12*3600              # 12시간 유지(원하면 변경)
+AUTH_QUERY_KEY = "auth"         # URL 쿼리 키
+
+# Streamlit 버전 호환 rerun
+def _rerun():
+    if hasattr(st, "rerun"):
+        st.rerun()
+    else:
+        st.experimental_rerun()
 
 @st.cache_resource
 def _auth_store():
-    # token -> {"ts": issued_at}
+    """서버 메모리 영속 캐시: token -> {'ts': issued_at}"""
     return {}
 
-def _now(): return int(time.time())
+def _now() -> int:
+    return int(time.time())
 
-def _issue_token():
+def _issue_token() -> str:
     return uuid.uuid4().hex
 
 def _set_auth_query(token: str):
+    """리로드 없이 URL 쿼리에 auth 토큰을 주입"""
     try:
         qp = st.query_params
         qp[AUTH_QUERY_KEY] = token
@@ -41,16 +64,17 @@ def _set_auth_query(token: str):
     except Exception:
         st.experimental_set_query_params(**{AUTH_QUERY_KEY: token})
 
-def _get_auth_query() -> str | None:
+def _get_auth_query() -> Optional[str]:
     qp = st.query_params
     return qp.get(AUTH_QUERY_KEY)
 
 def _validate_token(token: str) -> bool:
     store = _auth_store()
     ent = store.get(token)
-    if not ent: return False
+    if not ent:
+        return False
     if _now() - ent["ts"] > AUTH_TTL:
-        # 만료
+        # 만료 → 제거
         del store[token]
         return False
     return True
@@ -60,49 +84,52 @@ def _persist_auth(token: str):
     store[token] = {"ts": _now()}
 
 def _logout():
-    # URL 토큰 제거 + 서버 저장소에서 삭제
+    """URL에서 토큰 제거 + 서버 저장소에서 삭제 + 세션 초기화"""
     token = _get_auth_query()
     if token:
         store = _auth_store()
         store.pop(token, None)
     # URL에서 auth 제거
-    qp = st.query_params
-    if AUTH_QUERY_KEY in qp:
-        del qp[AUTH_QUERY_KEY]
-        st.query_params = qp
+    try:
+        qp = st.query_params
+        if AUTH_QUERY_KEY in qp:
+            del qp[AUTH_QUERY_KEY]
+            st.query_params = qp
+    except Exception:
+        st.experimental_set_query_params()
     # 세션도 초기화
     st.session_state.clear()
-    if hasattr(st, "rerun"): st.rerun()
-    else: st.experimental_rerun()
+    _rerun()
 
 def check_password_with_token() -> bool:
-    # 1) URL 토큰이 유효하면 통과
+    """1) URL 토큰이 유효하면 통과, 2) 아니면 비밀번호 입력"""
+    # 1) 토큰 검증
     token = _get_auth_query()
     if token and _validate_token(token):
         return True
 
-    # 2) 아니면 비밀번호 입력
+    # 2) 비밀번호 입력 UI (사이드바)
     with st.sidebar:
         st.markdown("## 🔐 로그인")
         pwd = st.text_input("비밀번호를 입력하세요", type="password", key="__pwd__")
         login = st.button("로그인")
+
     if login:
         secret_pwd = st.secrets.get("DASHBOARD_PASSWORD")
-        if secret_pwd and pwd == str(secret_pwd):
+        if secret_pwd and isinstance(pwd, str) and pwd.strip() == str(secret_pwd).strip():
             new_token = _issue_token()
             _persist_auth(new_token)
             _set_auth_query(new_token)  # URL에 토큰 부여 → 새로고침 후에도 유지
-            if hasattr(st, "rerun"): st.rerun()
-            else: st.experimental_rerun()
+            _rerun()
         else:
             st.sidebar.warning("비밀번호가 일치하지 않습니다.")
     return False
 
-# 사용
+# ✅ 게이트 실행(앱 본문 앞에서 차단)
 if not check_password_with_token():
     st.stop()
 
-# (선택) 로그아웃 버튼
+# (선택) 로그아웃 버튼 — 원하면 사이드바 적절 위치에 노출
 # with st.sidebar:
 #     if st.button("로그아웃"):
 #         _logout()
