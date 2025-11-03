@@ -2125,7 +2125,7 @@ def render_ip_vs_group_comparison(
     group_name = " & ".join(group_name_parts) + " 평균"
     
     st.markdown(
-        f"### ⚖️ IP vs 그룹 평균 비교: <span style='color:#d93636;'>{ip}</span> vs <span style='color:#2a61cc;'>{group_name}</span>", 
+        f"### ⚖️  <span style='color:#d93636;'>{ip}</span> vs <span style='color:#2a61cc;'>{group_name}</span>", 
         unsafe_allow_html=True
     )
     st.divider()
