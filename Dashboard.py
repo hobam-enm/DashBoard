@@ -556,6 +556,57 @@ hr {
     margin: 1.5rem 0; /* 상하 여백 증가 */
     background-color: #e0e0e0;
 }
+
+# 사이드바 네비 버튼을 기존 <a.nav-item>처럼 보이게 커스텀
+st.markdown("""
+<style>
+/* 사이드바 전체 여백 조정(선택) */
+section[data-testid="stSidebar"] .block-container { padding-top: 0.75rem; }
+
+/* 공통 버튼 스타일 */
+section[data-testid="stSidebar"] .stButton > button {
+  border-radius: 10px;
+  border: 1px solid var(--outline, #DCDCDC);
+  background: #ffffff;
+  color: #222;
+  font-weight: 600;
+  padding: 10px 12px;
+  margin: 6px 0 0 0;
+  box-shadow: 0 0 0 0 rgba(0,0,0,0);
+  transition: all .12s ease-in-out;
+}
+
+/* hover */
+section[data-testid="stSidebar"] .stButton > button:hover {
+  border-color: #B9B9B9;
+  background: #fafafa;
+}
+
+/* 비활성(secondary) */
+section[data-testid="stSidebar"] .stButton [data-testid="baseButton-secondary"] {
+  border: 1px solid #E5E7EB;
+  background: #ffffff;
+  color: #374151;
+}
+
+/* 활성(Primary) — 기존 active .nav-item 느낌 */
+section[data-testid="stSidebar"] .stButton [data-testid="baseButton-primary"] {
+  background: linear-gradient(0deg, #2563EB, #2563EB);
+  color: #fff;
+  border: 1px solid #2563EB;
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.25);
+}
+
+/* 활성 hover */
+section[data-testid="stSidebar"] .stButton [data-testid="baseButton-primary"]:hover {
+  filter: brightness(1.02);
+}
+
+/* 사이드바 구분선(선택) */
+.sidebar-hr {
+  margin: 8px 0 12px 0;
+  border-top: 1px solid #E5E7EB;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -563,48 +614,42 @@ hr {
 
 #region [ 5. 사이드바 네비게이션 ]
 # =====================================================
-# URL 쿼리로 현재 페이지 읽기 (없으면 Overview)
+# 현재 페이지 읽기(없으면 Overview)
 current_page = get_current_page_default("Overview")
+st.session_state["page"] = current_page  # 세션 보존
 
-# 세션에도 현재 페이지 반영(최초 1회 or 쿼리 변경 시)
-st.session_state["page"] = current_page
-
-# 안전한 쿼리 갱신 헬퍼 (리로드 없이 URL만 갱신)
+# URL만 업데이트(리로드 없음)
 def _set_page_query_param(page_key: str):
     try:
-        # 신버전
         qp = st.query_params
         qp["page"] = page_key
         st.query_params = qp
     except Exception:
-        # 구버전 호환
         st.experimental_set_query_params(page=page_key)
 
 with st.sidebar:
-    st.markdown('<hr style="margin:0px 0; border:1px solid #ccc;">', unsafe_allow_html=True)
-    st.markdown('<div class="sidebar-logo">📊 DashBoard</div>', unsafe_allow_html=True)
-    st.markdown('<hr style="margin:0px 0; border:1px solid #ccc;">', unsafe_allow_html=True)
+    st.markdown('<div class="sidebar-hr"></div>', unsafe_allow_html=True)
+    st.markdown("### 🧭 Navigation")
 
-    # >>> 기존의 <a href="?page=..."> 제거! (리로드 발생)
-    # 버튼/토글 기반 내비로 교체 (세션 유지)
+    # 버튼을 예전 <a.nav-item>처럼: 활성은 primary, 나머지는 secondary
+    # NAV_ITEMS 예: {"Overview":"Overview", "IP":"IP 성과", ...}
     for key, label in NAV_ITEMS.items():
         is_active = (current_page == key)
-        # 스타일 유지용 래퍼
-        btn_placeholder = st.empty()
-        # 버튼 클릭 시: 세션/URL만 업데이트 → rerun (세션 유지)
-        if btn_placeholder.button(
-            label if not is_active else f"✅ {label}",
+        btn_label = f"{'✅ ' if is_active else ''}{label}"
+        clicked = st.button(
+            btn_label,
             key=f"navbtn__{key}",
-            use_container_width=True
-        ):
+            use_container_width=True,
+            type=("primary" if is_active else "secondary")  # ← 활성 하이라이트
+        )
+        if clicked:
             st.session_state["page"] = key
-            _set_page_query_param(key)  # URL 업데이트(리로드 없음)
-            # rerun (세션 유지됨 → 인증 상태 유지)
+            _set_page_query_param(key)
+            # 세션 유지한 채로 리런
             if hasattr(st, "rerun"):
                 st.rerun()
             else:
                 st.experimental_rerun()
-
 #endregion
 
 
