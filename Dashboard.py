@@ -419,8 +419,8 @@ section[data-testid="stSidebar"] {
     padding-top: 1rem;
     padding-left: 0.5rem;
     padding-right: 0.5rem;
-    min-width:360px !important;
-    max-width:360px !important;
+    min-width:340px !important;
+    max-width:340px !important;
 }
 /* 사이드바 접힘 토글 버튼 숨김 */
 div[data-testid="collapsedControl"] { display:none !important; }
