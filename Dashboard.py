@@ -14,11 +14,44 @@ from plotly import graph_objects as go
 import plotly.io as pio
 import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
-
-# ◀◀◀ [신규] Streamlit Cloud 인증을 위한 라이브러리
 import gspread
 from google.oauth2.service_account import Credentials
 #endregion
+
+#region [ 1-1. 입장게이트 ]
+# =====================================================
+
+def check_password_simple():
+    """st.secrets['DASHBOARD_PASSWORD'] 와 비교하는 단순 방식"""
+    # 세션 상태 초기화
+    if "authenticated" not in st.session_state:
+        st.session_state["authenticated"] = False
+
+    # 이미 인증되어 있으면 True 반환 (앱 계속 실행)
+    if st.session_state["authenticated"]:
+        return True
+
+    # 로그인 UI를 사이드바에 노출 (원하면 중앙으로 바꾸면 됨)
+    st.sidebar.markdown("## 로그인")
+    pwd_input = st.sidebar.text_input("비밀번호를 입력하세요", type="password", key="pwd_input")
+    if st.sidebar.button("로그인"):
+        secret_pwd = st.secrets.get("DASHBOARD_PASSWORD")  # secrets.toml에 DASHBOARD_PASSWORD 추가
+        if secret_pwd is None:
+            st.sidebar.error("앱 관리자: Streamlit 시크릿에 DASHBOARD_PASSWORD가 설정되어 있지 않습니다.")
+        elif pwd_input == secret_pwd:
+            st.session_state["authenticated"] = True
+            st.experimental_rerun()  # 인증 후 페이지 재실행하여 상태 반영
+        else:
+            st.sidebar.warning("비밀번호가 일치하지 않습니다.")
+    # 인증 실패 시 False (이후에 st.stop()으로 앱 실행 차단)
+    return False
+
+# 실행 예: 반드시 앱 본문 시작 직후에 체크하고, 인증 안되면 중단시킴
+if not check_password_simple():
+    st.stop()
+# --- END: simple password gate ---
+#endregion
+
 
 #region [ 2. 기본 설정 및 공통 상수 ]
 # =====================================================
