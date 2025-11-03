@@ -2125,7 +2125,7 @@ def render_ip_vs_group_comparison(
     group_name = " & ".join(group_name_parts) + " 평균"
     
     st.markdown(
-        f"### ⚖️  <span style='color:#d93636;'>{ip}</span> vs <span style='color:#2a61cc;'>{group_name}</span>", 
+        f"#### ⚖️  <span style='color:#d93636;'>{ip}</span> vs <span style='color:#2a61cc;'>{group_name}</span>", 
         unsafe_allow_html=True
     )
     st.divider()
@@ -2419,7 +2419,7 @@ def _render_kpi_card_comparison(
 # --- IP vs IP 메인 렌더링 함수 ---
 def render_ip_vs_ip_comparison(df_all: pd.DataFrame, ip1: str, ip2: str, kpi_percentiles: pd.DataFrame):
     
-    st.markdown(f"### ⚖️ IP 직접 비교: <span style='color:#d93636;'>{ip1}</span> vs <span style='color:#2a61cc;'>{ip2}</span>", unsafe_allow_html=True)
+    st.markdown(f"#### ⚖️ : <span style='color:#d93636;'>{ip1}</span> vs <span style='color:#2a61cc;'>{ip2}</span>", unsafe_allow_html=True)
     st.divider()
 
     # --- 데이터 준비 ---
