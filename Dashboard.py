@@ -579,6 +579,35 @@ section[data-testid="stSidebar"] .stButton [data-testid="baseButton-primary"]:ho
 .sidebar-hr { margin: 8px 0 12px 0; border-top: 1px solid #E5E7EB; }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown("""
+<style>
+/* ===== Gradient Title ===== */
+.page-title-wrap{
+  display:flex; align-items:center; gap:10px; margin:2px 0 14px 0;
+}
+.page-title-emoji{
+  font-size: 22px; line-height:1; filter: drop-shadow(0 1px 0 rgba(0,0,0,0.05));
+}
+.page-title-main{
+  font-size: 26px; font-weight: 800; letter-spacing: -0.2px; line-height: 1.1;
+  background: linear-gradient(90deg,#6A5ACD 0%, #A663CC 40%, #FF7A8A 75%, #FF8A3D 100%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
+.page-title-dot{ opacity:.35; margin:0 6px; font-weight:700; }
+.page-title-sub{
+  font-size: 20px; font-weight: 800; color: #FF8A3D; letter-spacing:-0.2px;
+}
+
+/* 반응형 살짝 */
+@media (max-width: 640px){
+  .page-title-main{ font-size: 22px; }
+  .page-title-sub { font-size: 18px; }
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 #endregion
 
 
@@ -599,7 +628,27 @@ def _set_page_query_param(page_key: str):
 
 with st.sidebar:
     st.markdown('<div class="sidebar-hr"></div>', unsafe_allow_html=True)
-    st.markdown("## 드라마 성과 대시보드")
+    
+    def render_gradient_title(main_text: str, sub_text: str = "드라마 성과 대시보드", emoji: str = "💬"):
+    st.markdown(
+        f"""
+        <div class="page-title-wrap">
+          <span class="page-title-emoji">{emoji}</span>
+          <div>
+            <div class="page-title-main">{main_text}</div>
+            <div>
+              <span class="page-title-dot">·</span>
+              <span class="page-title-sub">{sub_text}</span>
+            </div>
+          </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# 사용 예: 지금 "navigation" 찍던 자리에서 이 한 줄로 교체
+render_gradient_title("유튜브 댓글분석", "AI 챗봇")
+
     st.caption("문의 : 디지털마케팅팀 데이터파트")
 
     # 버튼을 예전 <a.nav-item>처럼: 활성은 primary, 나머지는 secondary
