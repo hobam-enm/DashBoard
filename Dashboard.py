@@ -34,7 +34,7 @@ st.set_page_config(
 #region [ 1-1. 입장게이트 - URL 토큰 지속 인증 ]
 # =====================================================
 # 새로고침/재실행에도 URL ?auth=토큰 으로 로그인 유지
-AUTH_TTL = 12*3600              # 12시간 유지(원하면 변경)
+AUTH_TTL = 12*3600              # 12시간 유지
 AUTH_QUERY_KEY = "auth"         # URL 쿼리 키
 
 # Streamlit 버전 호환 rerun
@@ -129,10 +129,6 @@ def check_password_with_token() -> bool:
 if not check_password_with_token():
     st.stop()
 
-# (선택) 로그아웃 버튼 — 원하면 사이드바 적절 위치에 노출
-# with st.sidebar:
-#     if st.button("로그아웃"):
-#         _logout()
 #endregion
 
 
@@ -193,18 +189,18 @@ div[data-testid="stVerticalBlockBorderWrapper"]:has(.mode-switch) {
 NAV_ITEMS = {
     "Overview": "📊 Overview",
     "IP 성과": "📈 IP 성과 자세히보기",
-    "데모그래픽": "👥 IP 오디언스 히트맵",
-    "비교분석": "⚖️ IP간 비교분석",
+    "데모그래픽": "👥 오디언스 히트맵",
+    "비교분석": "⚖️ 비교분석",
     "성장스코어-방영지표": "🚀 성장스코어-방영지표",
     "성장스코어-디지털": "🛰️ 성장스코어-디지털",
-    "회차별": "🎬 회차별 비교",
+    "회차별": "🎬 회차 비교",
 }
 
 # ===== 데모 컬럼 순서 (페이지 2, 3에서 공통 사용) =====
 DECADES = ["10대","20대","30대","40대","50대","60대"]
 DEMO_COLS_ORDER = [f"{d}남성" for d in DECADES] + [f"{d}여성" for d in DECADES]
 
-# ===== ◀◀◀ [신규] Plotly 공통 테마 (아이디어 #3) =====
+# ===== ◀◀◀ [신규] Plotly 공통 테마 =====
 dashboard_theme = go.Layout(
     paper_bgcolor='rgba(0,0,0,0)',  # 카드 배경과 동일하게 투명
     plot_bgcolor='rgba(0,0,0,0)',   # 차트 내부 배경 투명
