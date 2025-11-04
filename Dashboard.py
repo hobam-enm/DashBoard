@@ -1076,7 +1076,7 @@ def render_overview():
     st.divider()
 
     # --- 주요작품 테이블 (AgGrid) ---
-    st.markdown("#### 🎬 주요 작품 성과")
+    st.markdown("#### 🎬 전체 작품 RAW")
 
     df_perf = (
         f.groupby("IP")
@@ -1981,7 +1981,7 @@ def render_demographic():
     # --- Index 계산 ---
     if df_base.empty:
         st.warning("기준 IP의 데모 데이터를 생성할 수 없습니다.")
-        render_heatmap(pd.DataFrame(), f"{media_list_label} 데모 증감 비교 ({selected_ip1} vs {comp_name})") # <-- 히트맵 호출
+        render_heatmap(pd.DataFrame(), f"{media_list_label} 데모X회차 시청자수 비교 ({selected_ip1} vs {comp_name})") # <-- 히트맵 호출
         return
     if df_comp.empty:
          st.warning(f"비교 대상({comp_name})의 데모 데이터를 생성할 수 없습니다. Index 계산 시 비교값은 0으로 처리됩니다.")
