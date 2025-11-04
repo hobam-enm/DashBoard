@@ -710,6 +710,12 @@ def mean_of_ip_sums(df: pd.DataFrame, metric_name: str, media=None) -> float | N
     sub = df[(df["metric"] == metric_name)].copy()
     if media is not None:
         sub = sub[sub["매체"].isin(media)]
+    # ✅ [규칙 추가] 조회수 합계: 매체가 '유튜브'일 때는 세부속성1이 PGC/UGC만 포함
+    if metric_name == "조회수" and not sub.empty and "매체" in sub.columns:
+        if "세부속성1" in sub.columns:
+            yt_mask = (sub["매체"] == "유튜브")
+            attr_mask = sub["세부속성1"].isin(["PGC", "UGC"])
+            sub = sub[~yt_mask | (yt_mask & attr_mask)]
     if sub.empty:
         return None
     # ☆ 핵심: 0 패딩 제외
@@ -1080,7 +1086,7 @@ def render_overview():
             티빙LIVE=("value", lambda x: x[(f.loc[x.index, "매체"]=="TVING LIVE") & (f.loc[x.index,"metric"]=="시청인구")].sum()),
             티빙QUICK=("value", lambda x: x[(f.loc[x.index, "매체"]=="TVING QUICK") & (f.loc[x.index,"metric"]=="시청인구")].sum()),
             티빙VOD_6Days=("value", lambda x: x[(f.loc[x.index, "매체"]=="TVING VOD") & (f.loc[x.index,"metric"]=="시청인구")].sum()),
-            디지털조회수=("value", lambda x: x[(f.loc[x.index,"metric"]=="조회수")].sum()),
+            디지털조회수=("value", lambda x: x[(f.loc[x.index,"metric"]=="조회수") & ((f.loc[x.index,"매체"]!="유튜브") | (f.loc[x.index,"세부속성1"].isin(["PGC","UGC"])) )].sum()),
             디지털언급량=("value", lambda x: x[(f.loc[x.index,"metric"]=="언급량")].sum()),
             화제성순위=("value", lambda x: x[(f.loc[x.index,"metric"]=="F_Total")].min())
         )
@@ -1438,7 +1444,7 @@ def render_ip_detail():
     cC, cD = st.columns(2)
     with cC:
         st.markdown("<div class='sec-title'>▶ 디지털 조회수</div>", unsafe_allow_html=True)
-        dview = f[f["metric"] == "조회수"].copy()
+        dview = f[(f["metric"] == "조회수") & ((f["매체"]!="유튜브") | (f["세부속성1"].isin(["PGC","UGC"])) )].copy()
         if not dview.empty:
             if has_week_col and dview["주차"].notna().any():
                 order = (dview[["주차", "주차_num"]].dropna().drop_duplicates().sort_values("주차_num")["주차"].tolist())
@@ -2062,7 +2068,7 @@ def get_kpi_data_for_all_ips(df_all: pd.DataFrame) -> pd.DataFrame:
         kpi_livequick = pd.Series(dtype=float, name="TVING 라이브+QUICK")
 
     # 4) 디지털 합산(단순 합) — 0은 이미 NaN으로 제거됨
-    kpi_view = df[df["metric"] == "조회수"].groupby("IP")["value"].sum().rename("디지털 조회수")
+    kpi_view = df[(df["metric"] == "조회수") & ((df["매체"]!="유튜브") | (df["세부속성1"].isin(["PGC","UGC"])) )].groupby("IP")["value"].sum().rename("디지털 조회수")
     kpi_buzz = df[df["metric"] == "언급량"].groupby("IP")["value"].sum().rename("디지털 언급량")
 
     # 통합 & 백분위
@@ -2668,6 +2674,8 @@ def filter_data_for_episode_comparison(
 
         elif selected_metric in ["조회수", "언급량"]:
             filtered = base_filtered[base_filtered["metric"] == selected_metric]
+            if selected_metric == "조회수" and not filtered.empty:
+                filtered = filtered[(filtered["매체"]!="유튜브") | (filtered["세부속성1"].isin(["PGC","UGC"]))]
             if not filtered.empty: 
                 result_df = filtered.groupby("IP")["value"].sum().reset_index()
                 
@@ -3585,7 +3593,7 @@ def render_growth_score_digital():
     _ip_all["value_num"] = pd.to_numeric(_ip_all["value"], errors="coerce").replace(0, np.nan)
 
     # 선택 IP의 조회수 1·2회차 보유 여부(“N=2” 라벨 처리에 사용)
-    _v_view = df_all[(df_all["IP"] == selected_ip) & (df_all["metric"] == "조회수")].copy()
+    _v_view = df_all[(df_all["IP"] == selected_ip) & (df_all["metric"] == "조회수") & ((df_all["매체"]!="유튜브") | (df_all["세부속성1"].isin(["PGC","UGC"])) )].copy()
     _v_view["ep"] = pd.to_numeric(
         _v_view["회차_numeric"] if "회차_numeric" in _v_view.columns
         else _v_view["회차"].astype(str).str.extract(r"(\d+)", expand=False),
