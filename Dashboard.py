@@ -1085,7 +1085,8 @@ def render_overview():
             티빙VOD_6Days=("value", lambda x: x[(f.loc[x.index, "매체"]=="TVING VOD") & (f.loc[x.index,"metric"]=="시청인구")].sum()),
             디지털조회수=("value", lambda x: x[(f.loc[x.index,"metric"]=="조회수") & ((f.loc[x.index,"매체"]!="유튜브") | (f.loc[x.index,"세부속성1"].isin(["PGC","UGC"])) )].sum()),
             디지털언급량=("value", lambda x: x[(f.loc[x.index,"metric"]=="언급량")].sum()),
-            화제성순위=("value", lambda x: x[(f.loc[x.index,"metric"]=="F_Total")].min())
+            화제성순위=("value", lambda x: x[(f.loc[x.index,"metric"]=="F_Total")].min()),
+            화제성점수=("value", lambda x: x[(f.loc[x.index,"metric"]=="F_Score")].mean()) # 추가된 부분
         )
         .reset_index()
     ).sort_values("타깃시청률", ascending=False)
@@ -1125,6 +1126,7 @@ def render_overview():
     gb.configure_column('디지털조회수', valueFormatter=fmt_thousands)
     gb.configure_column('디지털언급량', valueFormatter=fmt_thousands)
     gb.configure_column('화제성순위', valueFormatter=fmt_rank)
+    gb.configure_column('화제성점수', valueFormatter=fmt_thousands) # 추가된 부분
 
     grid_options = gb.build()
 
