@@ -1017,6 +1017,7 @@ def render_overview():
     tving_vod  = avg_of_ip_tving_epSum_mean("TVING VOD")
     digital_view = avg_of_ip_sums("조회수")
     digital_buzz = avg_of_ip_sums("언급량")
+    f_score      = avg_of_ip_means("F_Score")
     fundex_top1 = count_ip_with_min1("F_Total")
     anchor_total = count_anchor_dramas()
 
@@ -1027,9 +1028,9 @@ def render_overview():
     kpi(c5, "▶️ 티빙 VOD", fmt(tving_vod, intlike=True))
     kpi(c6, "👀 디지털 조회", fmt(digital_view, intlike=True))
     kpi(c7, "💬 디지털 언급량", fmt(digital_buzz, intlike=True))
-    kpi(c8, "🥇 펀덱스 1위", f"{fundex_top1}작품")
-    kpi(c9, "⚓ 앵커드라마", f"{anchor_total}작품")
-    kpi(c10, "　", "　")
+    kpi(c8, "🔥 화제성 점수",  fmt(f_score, intlike=True))
+    kpi(c9, "🥇 펀덱스 1위", f"{fundex_top1}작품")
+    kpi(c10, "⚓ 앵커드라마", f"{anchor_total}작품")
 
     st.divider()
 
