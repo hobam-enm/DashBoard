@@ -1650,50 +1650,41 @@ def render_ip_detail():
             st.info("표시할 화제성 지수 데이터가 없습니다.")
 
     with cF:
-        st.markdown("<div class='sec-title'>🔥 화제성 점수 </div>", unsafe_allow_html=True)
-        fs = _metric_filter(f, "F_score").copy()
-        if not fs.empty:
-            fs["val"] = pd.to_numeric(fs["value"], errors="coerce")
-            fs = fs.dropna(subset=["val"])
-            if not fs.empty:
-                # 회차 우선 → 날짜 → 단순평균 시계열
-                if fs["회차_num"].notna().any():
-                    fs_plot = fs.dropna(subset=["회차_num"]).groupby("회차_num", as_index=False)["val"].mean()
-                    x_vals = fs_plot["회차_num"].astype(int).tolist()
-                    x_is_category = True
-                    x_labels = [ _fmt_ep(x) for x in x_vals ] if "_fmt_ep" in globals() else x_vals
-                elif date_col_for_filter in fs.columns and fs[date_col_for_filter].notna().any():
-                    fs_plot = fs.dropna(subset=[date_col_for_filter]).groupby(date_col_for_filter, as_index=False)["val"].mean()
-                    x_vals = fs_plot[date_col_for_filter].tolist()
-                    x_is_category = False
-                    x_labels = None
-                else:
-                    # 인덱스 없이 정렬
-                    fs_plot = fs.sort_values("val").reset_index(drop=True).reset_index()
-                    fs_plot.rename(columns={"index":"x"}, inplace=True)
-                    x_vals = fs_plot["x"].tolist()
-                    x_is_category = True
-                    x_labels = x_vals
+        st.markdown("<div class='sec-title'>🔥 화제성 점수 (F_score)</div>", unsafe_allow_html=True)
+        fsc = f[f["metric"] == "F_score"].copy()  # 화제성지수(F_Total)와 동일 로직 적용
+        if not fsc.empty:
+            fsc["점수"] = pd.to_numeric(fsc["value"], errors="coerce")
 
-                fig_fscore = go.Figure()
-                fig_fscore.add_trace(go.Scatter(
-                    x=x_labels if x_labels is not None else x_vals,
-                    y=fs_plot["val"],
-                    mode="lines",
-                    name="F_score",
-                    line_shape="spline"
-                ))
-                if x_is_category:
-                    fig_fscore.update_xaxes(categoryorder="array", categoryarray=(x_labels if x_labels is not None else x_vals), title=None, fixedrange=True)
-                else:
-                    fig_fscore.update_xaxes(title=None, fixedrange=True)
-                fig_fscore.update_yaxes(title=None, fixedrange=True)
-                fig_fscore.update_layout(legend_title=None, height=chart_h, margin=dict(l=8, r=8, t=10, b=8))
-                st.plotly_chart(fig_fscore, use_container_width=True, config=common_cfg)
+            if has_week_col and fsc["주차"].notna().any():
+                # 주차_num으로 정렬, 주차별 평균 (지수와 동일)
+                order = (
+                    fsc[["주차", "주차_num"]].dropna()
+                    .drop_duplicates()
+                    .sort_values("주차_num")["주차"].tolist()
+                )
+                s = fsc.groupby("주차", as_index=True)["점수"].mean().reindex(order).dropna()
+                x_vals = s.index.tolist(); use_category = True
             else:
-                st.info("표시할 화제성 점수(F_score) 데이터가 없습니다.")
+                # 주차가 없으면 주차시작일(날짜) 기준 시계열
+                s = fsc.set_index("주차시작일")["점수"].sort_index().dropna()
+                x_vals = s.index.tolist(); use_category = False
+
+            fig_fscore = go.Figure()
+            fig_fscore.add_trace(go.Scatter(
+                x=x_vals, y=s.values,
+                mode="lines", name="F_score",
+                line_shape="spline"  # 부드러운 라인
+            ))
+            if use_category:
+                fig_fscore.update_xaxes(categoryorder="array", categoryarray=x_vals, title=None, fixedrange=True)
+            else:
+                fig_fscore.update_xaxes(title=None, fixedrange=True)
+            fig_fscore.update_yaxes(title=None, fixedrange=True)
+            fig_fscore.update_layout(legend_title=None, height=chart_h, margin=dict(l=8, r=8, t=10, b=8))
+            st.plotly_chart(fig_fscore, use_container_width=True, config=common_cfg)
         else:
             st.info("표시할 화제성 점수(F_score) 데이터가 없습니다.")
+
 
     # === [Row4] TV/TVING 데모분포  ===
     cG, cH = st.columns(2)
