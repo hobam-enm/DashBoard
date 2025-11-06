@@ -1260,19 +1260,16 @@ def render_ip_detail():
     val_buzz = mean_of_ip_sums(f, "언급량")
     val_view = mean_of_ip_sums(f, "조회수")
 
-    # ▶ 화제성 메트릭 추가
-    # - 최고 화제성 순위: F_Total의 '최솟값'(숫자 작을수록 좋음)
-    # - 화제성 점수: F_score의 '평균'(시청률 평균 로직과 동일)
+    # ▶ 화제성 메트릭 (명시 고정: 순위=F_Total, 점수=F_score)
     def _min_of_ip_metric(df_src: pd.DataFrame, metric_name: str) -> float | None:
         sub = df_src[df_src["metric"] == metric_name].copy()
         if sub.empty:
             return None
-        s = pd.to_numeric(sub["value"], errors="coerce")
-        s = s.dropna()
+        s = pd.to_numeric(sub["value"], errors="coerce").dropna()
         return float(s.min()) if not s.empty else None
 
-    val_topic_min  = _min_of_ip_metric(f, "F_Total")
-    val_topic_avg  = mean_of_ip_episode_mean(f, "F_score")
+    val_topic_min = _min_of_ip_metric(f, "F_Total")
+    val_topic_avg = mean_of_ip_episode_mean(f, "F_score")
 
     base_T = mean_of_ip_episode_mean(base, "T시청률")
     base_H = mean_of_ip_episode_mean(base, "H시청률")
@@ -1283,8 +1280,6 @@ def render_ip_detail():
     base_view = mean_of_ip_sums(base, "조회수")
 
     # ▶ 화제성 베이스값
-    #   - 순위는 각 IP의 '최고(최소) 순위'를 IP별로 만들고 그 평균을 집단 대표값으로 사용
-    #   - 점수는 시청률과 동일 로직인 회차평균의 IP평균(=기존 mean_of_ip_episode_mean)
     def _series_ip_metric(base_df: pd.DataFrame, metric_name: str, mode: str = "mean", media: List[str] | None = None):
         sub = base_df[base_df["metric"] == metric_name].copy()
         if media is not None:
@@ -1304,12 +1299,11 @@ def render_ip_detail():
             sub = sub.dropna(subset=[ep_col])
             ep_sum = sub.groupby(["IP", ep_col], as_index=False)["value"].sum()
             s = ep_sum.groupby("IP")["value"].mean()
-        elif mode == "min":  # ◀◀ 추가: F_Total 같은 '순위' 최소값(=최고순위)
+        elif mode == "min":
             s = sub.groupby("IP")["value"].min()
         else:
             raise ValueError("unknown mode")
-        s = pd.to_numeric(s, errors="coerce").dropna()
-        return s
+        return pd.to_numeric(s, errors="coerce").dropna()
 
     base_topic_min_series = _series_ip_metric(base, "F_Total", mode="min")
     base_topic_min = float(base_topic_min_series.mean()) if not base_topic_min_series.empty else None
@@ -1323,15 +1317,13 @@ def render_ip_detail():
         s = _series_ip_metric(base_df, metric_name, mode=mode, media=media)
         if s.empty or value is None or pd.isna(value):
             return (None, 0)
-        # 값이 존재하지 않으면, 현재 값 기준으로 서열 위치 추정
         if ip_name not in s.index:
             if low_is_good:
-                r = int((s < value).sum() + 1)  # 낮을수록 상위
+                r = int((s < value).sum() + 1)
             else:
-                r = int((s > value).sum() + 1)  # 높을수록 상위
+                r = int((s > value).sum() + 1)
             return (r, int(s.shape[0]))
-        # 일반 랭킹
-        ranks = s.rank(method="min", ascending=low_is_good)  # low_is_good=True면 낮은 값이 1위
+        ranks = s.rank(method="min", ascending=low_is_good)
         r = int(ranks.loc[ip_name])
         return (r, int(s.shape[0]))
 
@@ -1345,6 +1337,7 @@ def render_ip_detail():
     rk_fmin  = _rank_within_program(base, "F_Total",  ip_selected, val_topic_min, mode="min",   media=None, low_is_good=True)
     rk_fscr  = _rank_within_program(base, "F_score",  ip_selected, val_topic_avg, mode="mean",  media=None, low_is_good=False)
 
+    # --- KPI 렌더 유틸 (개선) ---
     def _pct_color(val, base_val):
         if val is None or pd.isna(val) or base_val in (None, 0) or pd.isna(base_val):
             return "#888"
@@ -1352,45 +1345,45 @@ def render_ip_detail():
         return "#d93636" if pct > 100 else ("#2a61cc" if pct < 100 else "#444")
 
     def sublines_html(prog_label: str, rank_tuple: tuple, val, base_val):
+        """기본: 그룹 내 N위 + 그룹 평균比 % 두줄"""
         rnk, total = rank_tuple if rank_tuple else (None, 0)
-
-        # "그룹 내 N위" 고정 문구
         rank_label = f"{rnk}위" if (rnk is not None and total > 0) else "–위"
-        rank_html = (
-            "<span class='kpi-sublabel'>그룹 內</span> "
-            f"<span class='kpi-substrong'>{rank_label}</span>"
-        )
-
-        # "그룹 평균比 P%" 고정 문구
-        pct_txt = "–"
-        col = "#888"
+        pct_txt = "–"; col = "#888"
         try:
-            import pandas as pd  # ensure pd exists here too
-            if (
-                val is not None
-                and base_val not in (None, 0)
-                and not (pd.isna(val) or pd.isna(base_val))
-            ):
+            if (val is not None) and (base_val not in (None, 0)) and (not (pd.isna(val) or pd.isna(base_val))):
                 pct = (float(val) / float(base_val)) * 100.0
-                pct_txt = f"{pct:.0f}%"
-                col = _pct_color(val, base_val) if "_pct_color" in globals() else "#333"
+                pct_txt = f"{pct:.0f}%"; col = _pct_color(val, base_val)
         except Exception:
-            pct_txt = "–"
-            col = "#888"
+            pct_txt = "–"; col = "#888"
 
-        pct_html = (
+        return (
+            "<div class='kpi-subwrap'>"
+            "<span class='kpi-sublabel'>그룹 內</span> "
+            f"<span class='kpi-substrong'>{rank_label}</span><br/>"
             "<span class='kpi-sublabel'>그룹 평균比</span> "
             f"<span class='kpi-subpct' style='color:{col};'>{pct_txt}</span>"
+            "</div>"
         )
 
-        return f"<div class='kpi-subwrap'>{rank_html}<br/>{pct_html}</div>"
+    def sublines_dummy():
+        """보이지 않지만 공간을 확보하는 더미 두 줄"""
+        return (
+            "<div class='kpi-subwrap' style='visibility:hidden;'>"
+            "<span class='kpi-sublabel'>_</span> <span class='kpi-substrong'>_</span><br/>"
+            "<span class='kpi-sublabel'>_</span> <span class='kpi-subpct'>_</span>"
+            "</div>"
+        )
 
-    def kpi_with_rank(col, title, value, base_val, rank_tuple, prog_label, intlike=False, digits=3):
+    def kpi_with_rank(col, title, value, base_val, rank_tuple, prog_label,
+                      intlike=False, digits=3, value_suffix:str=""):
         with col:
-            main = (
-                f"{value:,.0f}" if (intlike and value is not None and not pd.isna(value))
-                else (f"{value:.{digits}f}" if (value is not None and not pd.isna(value)) else "–")
-            )
+            if intlike and value is not None and not pd.isna(value):
+                main_val = f"{value:,.0f}"
+            elif (value is not None and not pd.isna(value)):
+                main_val = f"{value:.{digits}f}"
+            else:
+                main_val = "–"
+            main = f"{main_val}{value_suffix}"
             st.markdown(
                 f"<div class='kpi-card'>"
                 f"<div class='kpi-title'>{title}</div>"
@@ -1400,8 +1393,20 @@ def render_ip_detail():
                 unsafe_allow_html=True
             )
 
+    def kpi_dummy(col):
+        """내용 없는 빈 카드(높이·간격 맞춤용)"""
+        with col:
+            st.markdown(
+                "<div class='kpi-card'>"
+                "<div class='kpi-title' style='visibility:hidden;'>_</div>"
+                "<div class='kpi-value' style='visibility:hidden;'>_</div>"
+                f"{sublines_dummy()}"
+                "</div>",
+                unsafe_allow_html=True
+            )
+
     # === KPI 배치 (요청한 2줄 구성) ===
-    # 1줄: 타깃시청률 / 가구시청률 / TVING LIVE / TVING QUICK / TVING VOD
+    # 1줄(5개): 타깃시청률 / 가구시청률 / TVING LIVE / TVING QUICK / TVING VOD
     r1c1, r1c2, r1c3, r1c4, r1c5 = st.columns(5)
     kpi_with_rank(r1c1, "🎯 타깃시청률",    val_T,   base_T,   rk_T,     prog_label, intlike=False, digits=3)
     kpi_with_rank(r1c2, "🏠 가구시청률",    val_H,   base_H,   rk_H,     prog_label, intlike=False, digits=3)
@@ -1409,13 +1414,30 @@ def render_ip_detail():
     kpi_with_rank(r1c4, "⚡ TVING QUICK",    val_quick, base_quick, rk_quick, prog_label, intlike=True)
     kpi_with_rank(r1c5, "▶️ TVING VOD",      val_vod,   base_vod,   rk_vod,   prog_label, intlike=True)
 
-    # 2줄: 언급량 / 디지털조회수 / 최고 화제성 순위 / 화제성 점수(F_score)
-    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
+    # 2줄(5개): 언급량 / 디지털조회수 / 최고 화제성 순위 / 화제성 점수(F_score) / 더미
+    r2c1, r2c2, r2c3, r2c4, r2c5 = st.columns(5)
     kpi_with_rank(r2c1, "💬 총 언급량",     val_buzz,  base_buzz,  rk_buzz,  prog_label, intlike=True)
     kpi_with_rank(r2c2, "👀 디지털 조회수", val_view,  base_view,  rk_view,  prog_label, intlike=True)
-    # 순위는 '숫자 작을수록 좋음'이므로 KPI 본문은 숫자 그대로 표시
-    kpi_with_rank(r2c3, "🏆 최고 화제성 순위", val_topic_min, base_topic_min, rk_fmin, prog_label, intlike=True)
-    kpi_with_rank(r2c4, "🔥 화제성 점수",     val_topic_avg, base_topic_avg, rk_fscr, prog_label, intlike=False, digits=3)
+
+    # ▶ 화제성 순위 카드: 값 뒤에 "위" 붙이기 + 하단 두 줄은 숨김 더미로 교체
+    with r2c3:
+        v = val_topic_min
+        main_val = "–" if (v is None or pd.isna(v)) else f"{int(round(v)):,d}위"
+        st.markdown(
+            "<div class='kpi-card'>"
+            "<div class='kpi-title'>🏆 최고 화제성 순위</div>"
+            f"<div class='kpi-value'>{main_val}</div>"
+            f"{sublines_dummy()}"
+            "</div>",
+            unsafe_allow_html=True
+        )
+
+    # ▶ 화제성 점수(F_score): 일반 KPI (하단 두 줄은 표시 유지)
+    kpi_with_rank(r2c4, "🔥 화제성 점수",     val_topic_avg, base_topic_avg, rk_fscr,
+                  prog_label, intlike=False, digits=3)
+
+    # ▶ 2행 끝 더미 카드(레이아웃 균형)
+    kpi_dummy(r2c5)
 
     st.divider()
 
@@ -1591,23 +1613,17 @@ def render_ip_detail():
         st.markdown("<div class='sec-title'>🔥 화제성 점수 (F_score)</div>", unsafe_allow_html=True)
         fs = f[f["metric"] == "F_score"].copy()
         if not fs.empty:
-            # 회차 축 정렬
+            # 회차 축 정렬 + 평균
             if fs["회차"].notna().any():
                 fs = fs.dropna(subset=["회차_num"]).sort_values("회차_num")
-                x_vals = fs["회차"].tolist()
+                fs_plot = fs.groupby("회차", as_index=False)["value"].mean()
+                x_vals = fs_plot["회차"].tolist()
                 x_is_category = True
             else:
                 fs = fs.dropna(subset=[date_col_for_filter]).sort_values(date_col_for_filter)
-                x_vals = fs[date_col_for_filter].tolist()
-                x_is_category = False
-
-            # 회차 평균 처리(중복 회차 대비)
-            if "회차" in fs.columns and fs["회차"].notna().any():
-                fs_plot = fs.groupby("회차", as_index=False)["value"].mean()
-                x_vals = fs_plot["회차"].tolist()
-            else:
                 fs_plot = fs.rename(columns={date_col_for_filter: "x"}).groupby("x", as_index=False)["value"].mean()
                 x_vals = fs_plot["x"].tolist()
+                x_is_category = False
 
             fig_fscore = go.Figure()
             fig_fscore.add_trace(go.Scatter(
@@ -1760,6 +1776,7 @@ def render_ip_detail():
     tving_numeric = _build_demo_table_numeric(f, ["TVING LIVE", "TVING QUICK", "TVING VOD"])
     _render_aggrid_table(tving_numeric, "▶︎ TVING 합산 (LIVE/QUICK/VOD) 시청자수")
 #endregion
+
 
 
 #region [ 10. 페이지 3: IP간 데모분석 ]
