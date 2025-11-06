@@ -1651,39 +1651,56 @@ def render_ip_detail():
 
     with cF:
         st.markdown("<div class='sec-title'>🔥 화제성 점수 (F_score)</div>", unsafe_allow_html=True)
-        fsc = f[f["metric"] == "F_score"].copy()  # 화제성지수(F_Total)와 동일 로직 적용
+        fsc = f[f["metric"] == "F_score"].copy()
         if not fsc.empty:
             fsc["점수"] = pd.to_numeric(fsc["value"], errors="coerce")
 
-            if has_week_col and fsc["주차"].notna().any():
-                # 주차_num으로 정렬, 주차별 평균 (지수와 동일)
+            if has_week_col and f["주차"].notna().any():
+                # ✅ 다른 주차 기반 그래프와 동일: f에서 순서(order) 만들고, fsc를 그 순서로 reindex
                 order = (
-                    fsc[["주차", "주차_num"]].dropna()
+                    f[["주차", "주차_num"]]
+                    .dropna()
                     .drop_duplicates()
-                    .sort_values("주차_num")["주차"].tolist()
+                    .sort_values("주차_num")["주차"]
+                    .tolist()
                 )
-                s = fsc.groupby("주차", as_index=True)["점수"].mean().reindex(order).dropna()
-                x_vals = s.index.tolist(); use_category = True
+                s = (
+                    fsc.dropna(subset=["주차"])
+                       .groupby("주차", as_index=True)["점수"].mean()
+                       .reindex(order)
+                       .dropna()
+                )
+                x_vals = s.index.tolist()
+                use_category = True
             else:
-                # 주차가 없으면 주차시작일(날짜) 기준 시계열
-                s = fsc.set_index("주차시작일")["점수"].sort_index().dropna()
-                x_vals = s.index.tolist(); use_category = False
+                # 주차가 없으면 주차시작일(날짜) 기준 — 다른 그래프와 같은 폴백
+                s = (
+                    fsc.dropna(subset=[date_col_for_filter])
+                       .set_index(date_col_for_filter)["점수"]
+                       .sort_index()
+                )
+                x_vals = s.index.tolist()
+                use_category = False
 
-            fig_fscore = go.Figure()
-            fig_fscore.add_trace(go.Scatter(
-                x=x_vals, y=s.values,
-                mode="lines", name="F_score",
-                line_shape="spline"  # 부드러운 라인
-            ))
-            if use_category:
-                fig_fscore.update_xaxes(categoryorder="array", categoryarray=x_vals, title=None, fixedrange=True)
+            if not s.empty:
+                fig_fscore = go.Figure()
+                fig_fscore.add_trace(go.Scatter(
+                    x=x_vals, y=s.values,
+                    mode="lines", name="F_score",
+                    line_shape="spline"  # 부드러운 라인
+                ))
+                if use_category:
+                    fig_fscore.update_xaxes(categoryorder="array", categoryarray=x_vals, title=None, fixedrange=True)
+                else:
+                    fig_fscore.update_xaxes(title=None, fixedrange=True)
+                fig_fscore.update_yaxes(title=None, fixedrange=True)
+                fig_fscore.update_layout(legend_title=None, height=chart_h, margin=dict(l=8, r=8, t=10, b=8))
+                st.plotly_chart(fig_fscore, use_container_width=True, config=common_cfg)
             else:
-                fig_fscore.update_xaxes(title=None, fixedrange=True)
-            fig_fscore.update_yaxes(title=None, fixedrange=True)
-            fig_fscore.update_layout(legend_title=None, height=chart_h, margin=dict(l=8, r=8, t=10, b=8))
-            st.plotly_chart(fig_fscore, use_container_width=True, config=common_cfg)
+                st.info("표시할 화제성 점수(F_score) 데이터가 없습니다.")
         else:
             st.info("표시할 화제성 점수(F_score) 데이터가 없습니다.")
+
 
 
     # === [Row4] TV/TVING 데모분포  ===
