@@ -1475,7 +1475,7 @@ def render_ip_detail():
         )
 
     kpi_with_rank(r2c4, "🔥 화제성 점수",     val_topic_avg, base_topic_avg, rk_fscr,
-                  prog_label, intlike=False, digits=3)
+                  prog_label, intlike=True)
 
     kpi_dummy(r2c5)  # 끝 더미
 
@@ -1650,7 +1650,7 @@ def render_ip_detail():
             st.info("표시할 화제성 지수 데이터가 없습니다.")
 
     with cF:
-        st.markdown("<div class='sec-title'>🔥 화제성 점수 (F_score)</div>", unsafe_allow_html=True)
+        st.markdown("<div class='sec-title'>🔥 화제성 점수 </div>", unsafe_allow_html=True)
         fs = _metric_filter(f, "F_score").copy()
         if not fs.empty:
             fs["val"] = pd.to_numeric(fs["value"], errors="coerce")
