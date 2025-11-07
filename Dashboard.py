@@ -1560,8 +1560,15 @@ def render_ip_detail():
     base_view = mean_of_ip_sums(base, "조회수")
 
     # --- 화제성 베이스값 (페이지 2 전용) ---
+    # [수정] _series_ip_metric 함수 수정 (조회수 필터 적용 및 value 클리닝)
     def _series_ip_metric(base_df: pd.DataFrame, metric_name: str, mode: str = "mean", media: List[str] | None = None):
-        sub = _metric_filter(base_df, metric_name).copy()
+        
+        # [수정] '조회수' metric일 경우 PGC/UGC 필터(_get_view_data) 적용
+        if metric_name == "조회수":
+            sub = _get_view_data(base_df) # [3. 공통 함수]
+        else:
+            sub = _metric_filter(base_df, metric_name).copy()
+
         if media is not None:
             sub = sub[sub["매체"].isin(media)]
         if sub.empty:
@@ -1569,7 +1576,13 @@ def render_ip_detail():
 
         ep_col = _episode_col(sub) # [5. 공통 함수]
         sub = sub.dropna(subset=[ep_col])
-        if sub.empty: # [수정] 드롭 후 비어있으면 빈 시리즈 반환
+        if sub.empty: 
+            return pd.Series(dtype=float)
+
+        # [추가] 집계 전 value 컬럼 처리 (데이터 일관성 확보)
+        sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
+        sub = sub.dropna(subset=["value"])
+        if sub.empty:
             return pd.Series(dtype=float)
 
         if mode == "mean":
@@ -1622,7 +1635,7 @@ def render_ip_detail():
     rk_quick = _rank_within_program(base, "시청인구", ip_selected, val_quick, mode="ep_sum_mean", media=["TVING QUICK"])
     rk_vod   = _rank_within_program(base, "시청인구", ip_selected, val_vod,   mode="ep_sum_mean", media=["TVING VOD"])
     rk_buzz  = _rank_within_program(base, "언급량",   ip_selected, val_buzz,  mode="sum",        media=None)
-    rk_view  = _rank_within_program(base, "조회수",   ip_selected, val_view,  mode="sum",        media=None)
+    rk_view  = _rank_within_program(base, "조회수",   ip_selected, val_view,  mode="sum",        media=None) # [수정] 이 부분이 _series_ip_metric을 호출
     rk_fmin  = _rank_within_program(base, "F_Total",  ip_selected, val_topic_min, mode="min",   media=None, low_is_good=True)
     rk_fscr  = _rank_within_program(base, "F_score",  ip_selected, val_topic_avg, mode="mean",  media=None, low_is_good=False)
 
