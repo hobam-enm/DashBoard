@@ -412,23 +412,28 @@ hr { margin: 1.5rem 0; background-color: #e0e0e0; }
   transform: none !important;
   box-shadow: inherit !important;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]._liftable {
+
+/* [수정] ._liftable 클래스 의존성 제거 및 중복 규칙 통합 */
+div[data-testid="stVerticalBlockBorderWrapper"] {
   transition: transform .18s ease, box-shadow .18s ease !important;
   will-change: transform, box-shadow;
   backface-visibility: hidden;
+  position: relative;
+  /* emulate ._liftable (원본 주석 유지) */
 }
-div[data-testid="stVerticalBlockBorderWrapper"]._liftable:has(.stPlotlyChart:hover):not(:has(div[data-testid="stVerticalBlockBorderWrapper"] .stPlotlyChart:hover)) {
+
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.stPlotlyChart:hover):not(:has(div[data-testid="stVerticalBlockBorderWrapper"] .stPlotlyChart:hover)) { /* [수정] ._liftable 제거 */
   transform: translate3d(0,-4px,0) !important;
   box-shadow: 0 16px 40px rgba(16,24,40,.16), 0 6px 14px rgba(16,24,40,.10) !important;
   z-index: 3 !important;
 }
-div[data-testid="stVerticalBlockBorderWrapper"]._liftable:has(.ag-theme-streamlit .ag-root-wrapper:hover):not(:has(div[data-testid="stVerticalBlockBorderWrapper"] .ag-theme-streamlit .ag-root-wrapper:hover)) {
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.ag-theme-streamlit .ag-root-wrapper:hover):not(:has(div[data-testid="stVerticalBlockBorderWrapper"] .ag-theme-streamlit .ag-root-wrapper:hover)) { /* [수정] ._liftable 제거 */
   transform: translate3d(0,-4px,0) !important;
   box-shadow: 0 16px 40px rgba(16,24,40,.16), 0 6px 14px rgba(16,24,40,.10) !important;
   z-index: 3 !important;
 }
-div[data-testid="stVerticalBlockBorderWrapper"].*_liftable:has(.kpi-card:hover):not(:has(div[data-testid="stVerticalBlockBorderWrapper"] .kpi-card:hover)),
-div[data-testid="stVerticalBlockBorderWrapper"].*_liftable:has(.block-card:hover):not(:has(div[data-testid="stVerticalBlockBorderWrapper"] .block-card:hover)) {
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.kpi-card:hover):not(:has(div[data-testid="stVerticalBlockBorderWrapper"] .kpi-card:hover)), /* [수정] .*_liftable 제거 */
+div[data-testid="stVerticalBlockBorderWrapper"]:has(.block-card:hover):not(:has(div[data-testid="stVerticalBlockBorderWrapper"] .block-card:hover)) { /* [수정] .*_liftable 제거 */
   transform: translate3d(0,-4px,0) !important;
   box-shadow: 0 16px 40px rgba(16,24,40,.16), 0 6px 14px rgba(16,24,40,.10) !important;
   z-index: 3 !important;
@@ -437,13 +442,18 @@ section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"]
   transform: none !important;
   box-shadow: inherit !important;
   z-index: auto !important;
+  /* [추가] 사이드바에서는 트랜지션 효과 제거 */
+  transition: none !important; 
 }
+/* [수정] 아래의 중복 규칙들은 위의 통합 규칙으로 병합됨 */
+/*
 div[data-testid="stVerticalBlockBorderWrapper"] {
   position: relative;
 }
 div[data-testid="stVerticalBlockBorderWrapper"] {
   /* emulate ._liftable */
-}
+/*}
+*/
             
 /* ===== Sidebar compact spacing (tunable) ===== */
 [data-testid="stSidebar"]{
@@ -1221,7 +1231,11 @@ def render_overview():
                 title_font=dict(size=20)
             )
             fig.update_traces(texttemplate='%{text:,.0f}', textposition="inside")
-            st.plotly_chart(fig, use_container_width=True)
+            
+            # [수정] st.columns(1)로 감싸서 독립된 카드로 만듭니다.
+            c_trend, = st.columns(1)
+            with c_trend:
+                st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("주차별 시청자수 트렌드 데이터가 없습니다.")
     else:
@@ -1234,33 +1248,75 @@ def render_overview():
     st.markdown("#### 🎬 전체 작품 RAW")
 
     # [수정] 피드백 4번 반영: 비효율적인 lambda 집계 방식 최적화
+    # [수정] 2025-11-07: TVING/화제성 지표를 '회차합의 평균'으로, 디지털/언급량은 '총합'으로 수정
     def calculate_overview_performance(df):
         all_ips = df["IP"].unique()
         if len(all_ips) == 0:
             return pd.DataFrame()
 
-        # 1. metric/매체별로 데이터를 미리 피벗
-        pvt = pd.pivot_table(df, values="value", index="IP", columns=["metric", "매체"], aggfunc="sum")
+        # 0. episode-aware helper
+        ep_col = _episode_col(df) # [5. 공통 함수]
+        
+        # Helper to get "mean of episode sums"
+        def _get_mean_of_ep_sums(df, metric_name, media_list=None):
+            sub = df[df["metric"] == metric_name]
+            if media_list:
+                sub = sub[sub["매체"].isin(media_list)]
+            
+            # [수정] ep_col이 df에 없을 수 있으므로 확인 (e.g. df가 비었을 때)
+            if sub.empty or ep_col not in sub.columns: 
+                return pd.Series(dtype=float).reindex(all_ips).fillna(0)
+            
+            sub = sub.dropna(subset=[ep_col]).copy()
+            sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
+            sub = sub.dropna(subset=["value"])
+
+            if sub.empty: # [수정] dropna 후 비었는지 확인
+                return pd.Series(dtype=float).reindex(all_ips).fillna(0)
+
+            ep_sum = sub.groupby(["IP", ep_col], as_index=False)["value"].sum()
+            per_ip_mean = ep_sum.groupby("IP")["value"].mean()
+            return per_ip_mean.reindex(all_ips).fillna(0) # Reindex to align all IPs
+
+        # Helper to get "mean of episode means" (for ratings)
+        def _get_mean_of_ep_means(df, metric_name):
+            sub = df[df["metric"] == metric_name]
+            
+            if sub.empty or ep_col not in sub.columns:
+                return pd.Series(dtype=float).reindex(all_ips).fillna(0)
+            
+            sub = sub.dropna(subset=[ep_col]).copy()
+            sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
+            sub = sub.dropna(subset=["value"])
+
+            if sub.empty:
+                return pd.Series(dtype=float).reindex(all_ips).fillna(0)
+            
+            ep_mean = sub.groupby(["IP", ep_col], as_index=False)["value"].mean()
+            per_ip_mean = ep_mean.groupby("IP")["value"].mean()
+            return per_ip_mean.reindex(all_ips).fillna(0)
         
         # 2. 필요한 집계 정의
         aggs = {}
         
-        # 시청률 (평균)
-        aggs["타깃시청률"] = df[df["metric"] == "T시청률"].groupby("IP")["value"].mean()
-        aggs["가구시청률"] = df[df["metric"] == "H시청률"].groupby("IP")["value"].mean()
+        # 시청률 (회차평균의 평균)
+        aggs["타깃시청률"] = _get_mean_of_ep_means(df, "T시청률")
+        aggs["가구시청률"] = _get_mean_of_ep_means(df, "H시청률")
         
-        # TVING (합계)
-        aggs["티빙LIVE"] = pvt.get(("시청인구", "TVING LIVE"), pd.Series(0, index=all_ips))
-        aggs["티빙QUICK"] = pvt.get(("시청인구", "TVING QUICK"), pd.Series(0, index=all_ips))
-        aggs["티빙VOD_6Days"] = pvt.get(("시청인구", "TVING VOD"), pd.Series(0, index=all_ips))
+        # TVING (회차합의 평균) - [USER REQUEST]
+        aggs["티빙LIVE"] = _get_mean_of_ep_sums(df, "시청인구", ["TVING LIVE"])
+        aggs["티빙QUICK"] = _get_mean_of_ep_sums(df, "시청인구", ["TVING QUICK"])
+        aggs["티빙VOD_6Days"] = _get_mean_of_ep_sums(df, "시청인구", ["TVING VOD"])
         
-        # 디지털 (합계)
-        aggs["디지털언급량"] = df[df["metric"] == "언급량"].groupby("IP")["value"].sum()
-        aggs["디지털조회수"] = _get_view_data(df).groupby("IP")["value"].sum() # [3. 공통 함수]
+        # 디지털 (총합) - [USER REQUEST]
+        aggs["디지털언급량"] = df[df["metric"] == "언급량"].groupby("IP")["value"].sum().reindex(all_ips).fillna(0)
+        aggs["디지털조회수"] = _get_view_data(df).groupby("IP")["value"].sum().reindex(all_ips).fillna(0) # [3. 공통 함수]
         
         # 화제성 (최소/평균)
-        aggs["화제성순위"] = df[df["metric"] == "F_Total"].groupby("IP")["value"].min()
-        aggs["화제성점수"] = df[df["metric"] == "F_Score"].groupby("IP")["value"].mean()
+        aggs["화제성순위"] = df[df["metric"] == "F_Total"].groupby("IP")["value"].min().reindex(all_ips).fillna(0)
+        
+        # 화제성점수 (회차합의 평균) - [USER REQUEST]
+        aggs["화제성점수"] = _get_mean_of_ep_sums(df, "F_Score", media_list=None)
 
         # 3. 데이터프레임 결합
         df_perf = pd.DataFrame(aggs).fillna(0).reset_index().rename(columns={"index": "IP"})
@@ -1296,7 +1352,10 @@ def render_overview():
         headerClass='centered-header'
     )
     gb.configure_grid_options(rowHeight=34, suppressMenuHide=True, domLayout='normal')
-    gb.configure_column('IP', header_name='IP', cellStyle={'textAlign':'left'}, width=200) # [수정] 너비 고정
+    
+    # [수정] 'IP' 컬럼 너비 고정 제거 (width=200 삭제)
+    gb.configure_column('IP', header_name='IP', cellStyle={'textAlign':'left'}) 
+    
     gb.configure_column('타깃시청률', valueFormatter=fmt_fixed3, sort='desc')
     gb.configure_column('가구시청률', valueFormatter=fmt_fixed3)
     gb.configure_column('티빙LIVE', valueFormatter=fmt_thousands)
@@ -1314,7 +1373,7 @@ def render_overview():
         gridOptions=grid_options,
         theme="streamlit",
         height=300,
-        fit_columns_on_grid_load=False, # [수정] IP 컬럼 너비를 고정했으므로 False
+        fit_columns_on_grid_load=True, # [수정] True로 변경하여 화면에 맞춤
         update_mode=GridUpdateMode.NO_UPDATE,
         allow_unsafe_jscode=True
     )
@@ -2127,7 +2186,10 @@ def render_heatmap(df_plot: pd.DataFrame, title: str):
         xaxis=dict(side="top"),
     )
     
-    st.plotly_chart(fig, use_container_width=True)
+    # [수정] st.columns(1)로 감싸서 독립된 카드로 만듭니다.
+    c_heatmap, = st.columns(1)
+    with c_heatmap:
+        st.plotly_chart(fig, use_container_width=True)
 
 
 # ===== 9.4. [페이지 3] 메인 렌더링 함수 =====
@@ -3048,18 +3110,21 @@ def render_episode():
     chart_cols = st.columns(2)
     for i, metric in enumerate(key_metrics):
         with chart_cols[i % 2]:
-            try:
-                df_result = filter_data_for_episode_comparison(df_filtered_main, selected_episode, metric) # [11.1. 함수]
-                if df_result.empty or df_result['value'].isnull().all() or (df_result['value'] == 0).all():
-                    metric_label = metric.replace("T시청률", "타깃").replace("H시청률", "가구")
-                    st.markdown(f"###### {selected_episode} - '{metric_label}'")
-                    st.info("데이터 없음")
-                    st.markdown("---")
-                else:
-                    plot_episode_comparison(df_result, metric, selected_episode, selected_base_ip) # [11.2. 함수]
-                    st.markdown("---")
-            except Exception as e:
-                st.error(f"차트 렌더링 오류({metric}): {e}")
+            # [수정] 각 차트 항목을 별도의 1-column 레이아웃으로 감싸 (stVerticalBlockBorderWrapper를 강제로 생성)
+            inner_col, = st.columns(1)
+            with inner_col:
+                try:
+                    df_result = filter_data_for_episode_comparison(df_filtered_main, selected_episode, metric) # [11.1. 함수]
+                    if df_result.empty or df_result['value'].isnull().all() or (df_result['value'] == 0).all():
+                        metric_label = metric.replace("T시청률", "타깃").replace("H시청률", "가구")
+                        st.markdown(f"###### {selected_episode} - '{metric_label}'")
+                        st.info("데이터 없음")
+                        st.markdown("---")
+                    else:
+                        plot_episode_comparison(df_result, metric, selected_episode, selected_base_ip) # [11.2. 함수]
+                        st.markdown("---")
+                except Exception as e:
+                    st.error(f"차트 렌더링 오류({metric}): {e}")
 
 #endregion
 
@@ -3349,7 +3414,11 @@ def render_growth_score():
             margin=dict(l=8, r=8, t=8, b=8),
             showlegend=False
         )
-        st.plotly_chart(fig_e, use_container_width=True, config={"displayModeBar": False})
+        
+        # [수정] st.columns(1)로 감싸서 독립된 카드로 만듭니다.
+        c_evo, = st.columns(1)
+        with c_evo:
+            st.plotly_chart(fig_e, use_container_width=True, config={"displayModeBar": False})
 
     st.divider()
 
@@ -3416,8 +3485,11 @@ def render_growth_score():
                     xanchor="center", yanchor="middle",
                     yshift=6
                 )
-
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    
+    # [수정] st.columns(1)로 감싸서 독립된 카드로 만듭니다.
+    c_posmap, = st.columns(1)
+    with c_posmap:
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     # ---------- [전체표] ----------
     table = base[[
@@ -3450,7 +3522,7 @@ def render_growth_score():
         let bg=null, color=null, fw='700';
         if (/^[SABCD]/.test(v)) {
           if (v.startsWith('S')) { bg='rgba(0,91,187,0.14)'; color='#003d80'; }
-          else if (v.startsWith('A')) { bg='rgba(0,91,187,0.08)'; color:'#004a99'; }
+          else if (v.startsWith('A')) { bg='rgba(0,91,187,0.08)'; color='#004a99'; }
           else if (v.startsWith('B')) { bg='rgba(0,0,0,0.03)'; color:'#333'; fw='600'; }
           else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color:'#2a61cc'; }
           else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color:'#1a44a3'; }
@@ -3775,7 +3847,11 @@ def render_growth_score_digital():
             showgrid=False, zeroline=False, showline=False
         )
         fig_e.update_layout(height=200, margin=dict(l=8, r=8, t=8, b=8), showlegend=False)
-        st.plotly_chart(fig_e, use_container_width=True, config={"displayModeBar": False})
+        
+        # [수정] st.columns(1)로 감싸서 독립된 카드로 만듭니다.
+        c_evo_d, = st.columns(1)
+        with c_evo_d:
+            st.plotly_chart(fig_e, use_container_width=True, config={"displayModeBar": False})
 
     st.divider()
 
@@ -3832,7 +3908,10 @@ def render_growth_score_digital():
                     yshift=6
                 )
 
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    # [수정] st.columns(1)로 감싸서 독립된 카드로 만듭니다.
+    c_posmap_d, = st.columns(1)
+    with c_posmap_d:
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     # ---------- [전체표] ----------
     table = base[[
@@ -3863,7 +3942,7 @@ def render_growth_score_digital():
         let bg=null, color=null, fw='700';
         if (/^[SABCD]/.test(v)) {
           if (v.startsWith('S')) { bg='rgba(0,91,187,0.14)'; color='#003d80'; }
-          else if (v.startsWith('A')) { bg='rgba(0,91,187,0.08)'; color:'#004a99'; }
+          else if (v.startsWith('A')) { bg='rgba(0,91,187,0.08)'; color='#004a99'; }
           else if (v.startsWith('B')) { bg='rgba(0,0,0,0.03)'; color:'#333'; fw='600'; }
           else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color:'#2a61cc'; }
           else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color:'#1a44a3'; }
