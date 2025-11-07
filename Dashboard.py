@@ -284,7 +284,7 @@ section[data-testid="stSidebar"] .stButton > button {
   width: 100%;
   box-sizing: border-box;
   text-align: left;
-  padding: 12px 14px;
+  padding: 20px 20px;
   border-radius: 0;
   border: 1px solid #E5E7EB;
   background: transparent;
@@ -327,7 +327,7 @@ section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"]
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
-  padding: 4px !important;
+  padding: 0 !important;
   margin-bottom: 0 !important; /* [수정] 네비게이션 버튼 간격 제거 */
 }
 section[data-testid="stSidebar"] div[data-testid="stVerticalBlockBorderWrapper"]:hover {
