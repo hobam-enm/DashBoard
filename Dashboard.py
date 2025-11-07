@@ -249,8 +249,8 @@ section[data-testid="stSidebar"] {
     padding-top: 1rem;
     padding-left: 0.5rem;
     padding-right: 0.5rem;
-    min-width:340px !important;
-    max-width:340px !important;
+    min-width:320px !important;
+    max-width:320px !important;
 }
 div[data-testid="collapsedControl"] { display:none !important; }
 
@@ -286,8 +286,7 @@ section[data-testid="stSidebar"] .stButton > button {
   text-align: left;
   padding: 12px 14px;
   border-radius: 0;
-  border: none;
-  border-bottom: 1px solid #E5E7EB;
+  border: 1px solid #E5E7EB;
   background: transparent;
   color: #333;
   font-weight: 600;
