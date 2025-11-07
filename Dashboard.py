@@ -2201,7 +2201,6 @@ def render_demographic():
             
     media_list_label = "TV" if selected_media_type == "TV" else "TVING (L+Q+V 합산)"
 
-    st.caption(f"선택된 두 대상의 회차별 데모 시청인구 비교 ( {media_list_label} / 비교대상 대비 % 증감 )")
     st.divider()
 
     if not selected_ip1: st.warning("기준 IP를 선택해주세요."); return
@@ -2782,7 +2781,17 @@ def render_comparison():
     with filter_cols[0]:
         st.markdown("## ⚖️ IP간 비교분석")
     with st.expander("ℹ️ 지표 기준 안내", expanded=False):
-        st.markdown("<div class='gd-guideline'>[수정] 지표 기준 안내가 필요합니다.</div>", unsafe_allow_html=True)
+        st.markdown("<div class='gd-guideline'>", unsafe_allow_html=True)
+        st.markdown(textwrap.dedent("""
+            **지표 기준**
+        - **시청률** `회차평균`: 전국 기준 가구 / 타깃(2049) 시청률
+        - **티빙 LIVE** `회차평균`: 업데이트 예정
+        - **티빙 QUICK** `회차평균`: 방영당일 VOD 시청 UV
+        - **티빙 VOD** `회차평균`: 방영일+1부터 +6까지 **6days** VOD UV
+        - **디지털 조회/언급량** `회차총합`: 방영주차(월~일) 내 총합
+        - **화제성 점수** `회차평균`: 방영기간 주차별 화제성 점수 평균
+        """).strip())
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with filter_cols[1]:
         comparison_mode = st.radio(
