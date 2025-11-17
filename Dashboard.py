@@ -22,7 +22,7 @@ from google.oauth2.service_account import Credentials
 #region [ 1-0. 페이지 설정  ]
 # =====================================================
 st.set_page_config(
-    page_title="(TEST)Drama Dashboard",
+    page_title="Drama Dashboard",
     layout="wide",
     initial_sidebar_state="expanded"
 )
