@@ -1692,7 +1692,7 @@ def render_ip_detail():
         _render_pyramid_local(cI, "", vod_demo, height=260)
 
     # === [Row3] 디지털 ===
-    cC, cD = st.columns(2)
+    cC, cD, cE = st.columns(3)
     digital_colors = ['#5c6bc0', '#7e57c2', '#26a69a', '#66bb6a', '#ffa726', '#ef5350']
     
     with cC:
@@ -1774,8 +1774,7 @@ def render_ip_detail():
         else:
             st.info("표시할 언급량 데이터가 없습니다.")
 
-    # === [Row4] 화제성 ===
-    cE, cF = st.columns(2)
+
     with cE:
         st.markdown("<div class='sec-title'>🔥 화제성 점수 & 순위</div>", unsafe_allow_html=True)
         fdx = _metric_filter(f, "F_Total").copy(); fs = _metric_filter(f, "F_score").copy()
@@ -1817,9 +1816,7 @@ def render_ip_detail():
             else: st.info("데이터 없음")
         else: st.info("데이터 없음")
 
-    with cF:
-        st.markdown("<div style='height:320px;display:flex;align-items:center;justify-content:center;color:#ccc;'></div>", unsafe_allow_html=True)
-
+   
     st.divider()
 
 # === [Row5] 데모분석 상세 표 (AgGrid) ===
