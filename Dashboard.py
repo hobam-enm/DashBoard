@@ -1959,6 +1959,7 @@ def render_ip_detail():
     # === JS 렌더러 (▲/▾ + 행별 그라디언트) ===
 
     # DiffRenderer: 전 회차 대비 ▲/▾ 표시
+    # [수정] DiffRenderer: 주석 스타일 변경(//) 및 특수문자 HTML Entity 사용
     diff_renderer = JsCode("""
     class DiffRenderer {
       init(params) {
@@ -1988,11 +1989,11 @@ def render_ip_detail():
             const pv = Number(prev.data[colId] || 0);
 
             if (val > pv) {
-              # 상승: (▴) 작은 삼각형, 빨간색
-              arrow = '<span style="margin-left:4px;">(<span style="color:#d93636;">▴</span>)</span>';
+              // 상승: 작은 삼각형(Red) -> HTML Entity 사용
+              arrow = '<span style="margin-left:4px;">(<span style="color:#d93636;">&#9652;</span>)</span>';
             } else if (val < pv) {
-              # 하락: (▾) 작은 삼각형, 파란색
-              arrow = '<span style="margin-left:4px;">(<span style="color:#2a61cc;">▾</span>)</span>';
+              // 하락: 작은 역삼각형(Blue) -> HTML Entity 사용
+              arrow = '<span style="margin-left:4px;">(<span style="color:#2a61cc;">&#9662;</span>)</span>';
             }
           }
         }
