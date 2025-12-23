@@ -1975,12 +1975,12 @@ def render_ip_detail():
         const rawVal = (params.value === null || params.value === undefined) ? 0 : params.value;
         const val = Number(rawVal) || 0;
 
-        # 1. 숫자 포맷팅
+        // 1. 숫자 포맷팅
         let displayVal = (colId === "회차")
           ? (params.value || "")
           : Math.round(val).toLocaleString();
 
-        # 2. 화살표 로직
+        // 2. 화살표 로직
         let arrow = "";
         if (colId !== "회차" && api && typeof api.getDisplayedRowAtIndex === "function" && rowIndex > 0) {
           const prev = api.getDisplayedRowAtIndex(rowIndex - 1);
@@ -2011,7 +2011,7 @@ def render_ip_detail():
     cell_style_renderer = JsCode(f"""
     function(params){{
       const field = params.colDef.field;
-      # 회차 열: 좌측 정렬, 흰 배경 고정
+      // 회차 열: 좌측 정렬, 흰 배경 고정
       if (field === "회차") {{
         return {{
           'text-align': 'left',
