@@ -587,7 +587,7 @@ with st.sidebar:
 
     render_gradient_title("드라마 성과 대시보드", emoji="")
     st.markdown(
-        "<p class='sidebar-contact' style='font-size:12px; color:gray;'>문의 : 미디어)디지털마케팅팀 데이터파트</p>",
+        "<p class='sidebar-contact' style='font-size:12px; color:gray;'>문의 : 미디어)마케팅팀 데이터인사이트파트</p>",
         unsafe_allow_html=True
     )
     st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
