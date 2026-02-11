@@ -1420,22 +1420,9 @@ def render_ip_detail():
     base_raw = df_full.copy()
     group_name_parts = []
 
-    # [중요] 방영시작일 기준 미래작품 제외 (오늘 날짜보다 같거나 이전인 것만 포함)
-    if "방영시작일" in base_raw.columns:
-        # 1. 에러를 무시하고 강제로 날짜형 변환 (이미 되어있어도 안전장치)
-        # errors='coerce'로 변환 실패시 NaT 처리
-        base_raw["_start_dt"] = pd.to_datetime(base_raw["방영시작일"], errors="coerce")
-        
-        # 2. 오늘 날짜 구하기 (시간 00:00:00으로 통일)
-        today = pd.Timestamp.now().normalize()
-        
-        # 3. 날짜가 유효하고(NaT 아님) & 오늘보다 과거거나 같은 경우만 남김
-        base_raw = base_raw[
-            (base_raw["_start_dt"].notna()) & 
-            (base_raw["_start_dt"] <= today)
-        ]
-        # 임시 컬럼 삭제
-        base_raw = base_raw.drop(columns=["_start_dt"])
+    # [중요] 방영시작 기준 미래작품 제외 (오늘 이후 시작하는 IP는 비교군에서 제외)
+    base_raw = _exclude_future_ips(base_raw)
+
 
     # 1. 편성 기준 필터 적용
     if comp_type == "동일 편성":
