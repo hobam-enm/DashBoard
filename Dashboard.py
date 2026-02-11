@@ -1332,21 +1332,21 @@ def render_ip_detail():
             label_visibility="collapsed"
         )
 
-    # [Col 3] 동일 편성 여부 (셀렉트박스)
+    # [Col 3] 편성 기준 (옵션 확장 및 수목->평일 디폴트 로직 적용)
     with filter_cols[3]:
-        prog_options = ["동일 편성", "전체", "토일", "월화", "수목", "평일"]
-        
-        # [수정] 해당 IP가 '수목'일 경우 디폴트를 '평일'로, 그 외는 '동일 편성'
-        default_idx = 0
+        # 1. IP의 기본 편성 확인 (수목인지 체크)
+        default_idx = 0 # 기본: 동일 편성
         if sel_prog == "수목":
-            default_idx = 5  # '평일'의 인덱스
+            default_idx = 5 # '평일' 옵션의 인덱스 (아래 리스트 기준 5번째)
 
+        # 2. 셀렉트박스 생성
         comp_type = st.selectbox(
             "편성 기준",
-            prog_options, 
+            ["동일 편성", "전체", "토일", "월화", "수목", "평일"], 
             index=default_idx,
             label_visibility="collapsed"
         )
+        use_same_prog = (comp_type == "동일 편성")
 
     # --- 선택 IP 데이터 필터링 ---
     f = target_ip_rows.copy()
@@ -1370,36 +1370,48 @@ def render_ip_detail():
     base_raw = df_full.copy()
     group_name_parts = []
 
-    # [추가] 방영시작일 기준 미래작품 제외 (오늘 날짜보다 같거나 이전인 것만 포함)
+    # [중요] 방영시작일 기준 미래작품 제외 (오늘 날짜보다 같거나 이전인 것만 포함)
     if "방영시작일" in base_raw.columns:
-        # load_data에서 이미 datetime으로 변환되어 있음
-        # NaT(날짜 없음)도 조건문에서 False가 되어 자동으로 제외됨(안전)
-        base_raw = base_raw[base_raw["방영시작일"] <= pd.Timestamp.now()]
+        # 1. 에러를 무시하고 강제로 날짜형 변환 (이미 되어있어도 안전장치)
+        # errors='coerce'로 변환 실패시 NaT 처리
+        base_raw["_start_dt"] = pd.to_datetime(base_raw["방영시작일"], errors="coerce")
+        
+        # 2. 오늘 날짜 구하기 (시간 00:00:00으로 통일)
+        today = pd.Timestamp.now().normalize()
+        
+        # 3. 날짜가 유효하고(NaT 아님) & 오늘보다 과거거나 같은 경우만 남김
+        base_raw = base_raw[
+            (base_raw["_start_dt"].notna()) & 
+            (base_raw["_start_dt"] <= today)
+        ]
+        # 임시 컬럼 삭제
+        base_raw = base_raw.drop(columns=["_start_dt"])
 
-    # 1. 편성 기준 필터 (앞선 요청사항: 평일/동일편성 등 반영)
+    # 1. 편성 기준 필터 적용
     if comp_type == "동일 편성":
         if sel_prog:
             base_raw = base_raw[base_raw["편성"] == sel_prog]
             group_name_parts.append(f"'{sel_prog}'")
         else:
             st.warning(f"'{ip_selected}'의 편성 정보가 없어 '동일 편성' 기준은 제외됩니다.", icon="⚠️")
-            
+
     elif comp_type == "평일":
+        # [요청사항] 평일 = 월화 + 수목
         base_raw = base_raw[base_raw["편성"].isin(["월화", "수목"])]
         group_name_parts.append("'평일(월화+수목)'")
-        
+
     elif comp_type == "전체":
-        # 별도 필터링 없음
+        # 필터 없음
         pass
-        
-    else: 
-        # 토일, 월화, 수목 등 직접 선택한 경우
+
+    else:
+        # 토일, 월화, 수목 (직접 선택)
         base_raw = base_raw[base_raw["편성"] == comp_type]
         group_name_parts.append(f"'{comp_type}'")
 
     # 2. 방영 연도 필터
     if selected_years:
-        # 날짜 파싱 없이 컬럼 값 그대로 비교
+        # 날짜 파싱(.dt.year) 없이 컬럼 값 그대로 비교
         base_raw = base_raw[base_raw[date_col_for_filter].isin(selected_years)]
         
         if len(selected_years) <= 3:
@@ -1411,7 +1423,6 @@ def render_ip_detail():
             except:
                 group_name_parts.append("선택연도")
     else:
-        # 연도 미선택 시 경고 (필요에 따라 유지/제거)
         st.warning("선택된 연도가 없습니다. (전체 연도 데이터와 비교)", icon="⚠️")
 
     if not group_name_parts:
