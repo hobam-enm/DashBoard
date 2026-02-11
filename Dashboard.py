@@ -1370,29 +1370,40 @@ def render_ip_detail():
     base_raw = df_full.copy()
     group_name_parts = []
 
-    # 1. 편성 기준 필터 적용
+    # [추가] 방영시작일 기준 미래작품 제외 (오늘 날짜보다 같거나 이전인 것만 포함)
+    if "방영시작일" in base_raw.columns:
+        # load_data에서 이미 datetime으로 변환되어 있음
+        # NaT(날짜 없음)도 조건문에서 False가 되어 자동으로 제외됨(안전)
+        base_raw = base_raw[base_raw["방영시작일"] <= pd.Timestamp.now()]
+
+    # 1. 편성 기준 필터 (앞선 요청사항: 평일/동일편성 등 반영)
     if comp_type == "동일 편성":
         if sel_prog:
             base_raw = base_raw[base_raw["편성"] == sel_prog]
             group_name_parts.append(f"'{sel_prog}'")
         else:
             st.warning(f"'{ip_selected}'의 편성 정보가 없어 '동일 편성' 기준은 제외됩니다.", icon="⚠️")
+            
     elif comp_type == "평일":
         base_raw = base_raw[base_raw["편성"].isin(["월화", "수목"])]
         group_name_parts.append("'평일(월화+수목)'")
-    elif comp_type in ["토일", "월화", "수목"]:
+        
+    elif comp_type == "전체":
+        # 별도 필터링 없음
+        pass
+        
+    else: 
+        # 토일, 월화, 수목 등 직접 선택한 경우
         base_raw = base_raw[base_raw["편성"] == comp_type]
         group_name_parts.append(f"'{comp_type}'")
-    # "전체"인 경우 별도 필터링 없음
 
     # 2. 방영 연도 필터
     if selected_years:
-        # [수정] 날짜 파싱(.dt.year) 없이 컬럼 값 그대로 비교
+        # 날짜 파싱 없이 컬럼 값 그대로 비교
         base_raw = base_raw[base_raw[date_col_for_filter].isin(selected_years)]
         
         if len(selected_years) <= 3:
             years_str = ",".join(map(str, sorted(selected_years)))
-            # [수정] 데이터 값 자체("24년")를 사용하므로 "년" 접미사 제거
             group_name_parts.append(f"{years_str}")
         else:
             try:
@@ -1400,6 +1411,7 @@ def render_ip_detail():
             except:
                 group_name_parts.append("선택연도")
     else:
+        # 연도 미선택 시 경고 (필요에 따라 유지/제거)
         st.warning("선택된 연도가 없습니다. (전체 연도 데이터와 비교)", icon="⚠️")
 
     if not group_name_parts:
