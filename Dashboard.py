@@ -467,8 +467,35 @@ def load_data() -> pd.DataFrame:
         df["회차_numeric"] = df["회차"].str.extract(r"(\d+)", expand=False).astype(float)
     else:
         df["회차_numeric"] = pd.NA
-
     return df
+
+
+# ===== 3.x. 공통 필터: 방영 시작일이 '미래'인 IP 제외 (평균/순위 산정용) =====
+def _exclude_future_ips(df: pd.DataFrame, date_col: str = "방영시작일") -> pd.DataFrame:
+    """방영시작일이 오늘 이후(미래)인 IP는 '집계/순위' 계산에서 제외합니다.
+    - date_col이 없거나 날짜가 비어있으면 그대로 반환
+    - 날짜가 NaT인 IP는 제외하지 않음
+    """
+    if df is None or df.empty:
+        return df
+    if date_col not in df.columns:
+        return df
+
+    # '오늘' 기준 (시간 제거)
+    today = pd.Timestamp(datetime.datetime.now().date())
+
+    # IP별 방영시작일 최소값으로 미래 방영 IP 판정 (데이터 행마다 값이 달라도 안전)
+    try:
+        start_min = df.groupby("IP")[date_col].min()
+    except Exception:
+        return df
+
+    future_ips = start_min[(start_min.notna()) & (start_min > today)].index.tolist()
+    if not future_ips:
+        return df
+
+    return df[~df["IP"].isin(future_ips)].copy()
+
 
 # ===== 3.2. UI / 포맷팅 헬퍼 함수 =====
 
@@ -622,6 +649,7 @@ def _episode_col(df: pd.DataFrame) -> str:
     return "회차_numeric" if "회차_numeric" in df.columns else ("회차_num" if "회차_num" in df.columns else "회차")
 
 def mean_of_ip_episode_sum(df: pd.DataFrame, metric_name: str, media=None) -> float | None:
+    df = _exclude_future_ips(df)
     sub = df[(df["metric"] == metric_name)].copy()
     if media is not None:
         sub = sub[sub["매체"].isin(media)]
@@ -639,6 +667,7 @@ def mean_of_ip_episode_sum(df: pd.DataFrame, metric_name: str, media=None) -> fl
 
 
 def mean_of_ip_episode_mean(df: pd.DataFrame, metric_name: str, media=None) -> float | None:
+    df = _exclude_future_ips(df)
     sub = df[(df["metric"] == metric_name)].copy()
     if media is not None:
         sub = sub[sub["매체"].isin(media)]
@@ -656,6 +685,7 @@ def mean_of_ip_episode_mean(df: pd.DataFrame, metric_name: str, media=None) -> f
 
 
 def mean_of_ip_sums(df: pd.DataFrame, metric_name: str, media=None) -> float | None:
+    df = _exclude_future_ips(df)
     
     if metric_name == "조회수":
         sub = _get_view_data(df) 
@@ -1019,6 +1049,9 @@ def render_overview():
     # [수정] 월 필터 적용 (기존 날짜 컬럼 활용)
     if month_sel and date_col_for_month in f.columns:
         f = f[f[date_col_for_month].dt.month.isin(month_sel)]
+    # [추가] 미래 방영 IP 제외 (평균/순위 산정용)
+    f = _exclude_future_ips(f)
+
 
     # --- 요약카드 계산 서브함수 (KPI 공통 유틸 사용) ---
     def avg_of_ip_means(metric_name: str):
@@ -2669,6 +2702,8 @@ def _render_unified_charts(
 # ===== 10.5. [페이지 4] 메인 렌더링 함수 =====
 def render_comparison():
     df_all = load_data() # [3. 공통 함수]
+    df_all = _exclude_future_ips(df_all)
+
     
     if "회차_numeric" not in df_all.columns:
         df_all["회차_numeric"] = df_all["회차"].str.extract(r"(\d+)", expand=False).astype(float)
@@ -2933,6 +2968,8 @@ def render_growth_score():
     [페이지 6] 성장스코어-방영지표 렌더링 함수
     """
     df_all = load_data().copy() # [3. 공통 함수]
+    df_all = _exclude_future_ips(df_all)
+
 
     # ---------- 설정 ----------
     EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
@@ -3425,6 +3462,8 @@ def render_growth_score_digital():
     [페이지 7] 성장스코어-디지털 렌더링 함수
     """
     df_all = load_data().copy() # [3. 공통 함수]
+    df_all = _exclude_future_ips(df_all)
+
 
     # ---------- 설정 ----------
     EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
