@@ -1334,13 +1334,19 @@ def render_ip_detail():
 
     # [Col 3] 동일 편성 여부 (셀렉트박스)
     with filter_cols[3]:
+        prog_options = ["동일 편성", "전체", "토일", "월화", "수목", "평일"]
+        
+        # [수정] 해당 IP가 '수목'일 경우 디폴트를 '평일'로, 그 외는 '동일 편성'
+        default_idx = 0
+        if sel_prog == "수목":
+            default_idx = 5  # '평일'의 인덱스
+
         comp_type = st.selectbox(
             "편성 기준",
-            ["동일 편성", "전체"], 
-            index=0,
+            prog_options, 
+            index=default_idx,
             label_visibility="collapsed"
         )
-        use_same_prog = (comp_type == "동일 편성")
 
     # --- 선택 IP 데이터 필터링 ---
     f = target_ip_rows.copy()
@@ -1364,13 +1370,20 @@ def render_ip_detail():
     base_raw = df_full.copy()
     group_name_parts = []
 
-    # 1. 동일 편성 필터
-    if use_same_prog:
+    # 1. 편성 기준 필터 적용
+    if comp_type == "동일 편성":
         if sel_prog:
             base_raw = base_raw[base_raw["편성"] == sel_prog]
             group_name_parts.append(f"'{sel_prog}'")
         else:
             st.warning(f"'{ip_selected}'의 편성 정보가 없어 '동일 편성' 기준은 제외됩니다.", icon="⚠️")
+    elif comp_type == "평일":
+        base_raw = base_raw[base_raw["편성"].isin(["월화", "수목"])]
+        group_name_parts.append("'평일(월화+수목)'")
+    elif comp_type in ["토일", "월화", "수목"]:
+        base_raw = base_raw[base_raw["편성"] == comp_type]
+        group_name_parts.append(f"'{comp_type}'")
+    # "전체"인 경우 별도 필터링 없음
 
     # 2. 방영 연도 필터
     if selected_years:
