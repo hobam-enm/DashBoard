@@ -471,22 +471,39 @@ def load_data() -> pd.DataFrame:
 
 
 # ===== 3.x. 공통 필터: 방영 시작일이 '미래'인 IP 제외 (평균/순위 산정용) =====
-def _exclude_future_ips(df: pd.DataFrame, date_col: str = "방영시작일") -> pd.DataFrame:
-    """방영시작일이 오늘 이후(미래)인 IP는 '집계/순위' 계산에서 제외합니다.
-    - date_col이 없거나 날짜가 비어있으면 그대로 반환
-    - 날짜가 NaT인 IP는 제외하지 않음
+def _exclude_future_ips(df: pd.DataFrame, date_col: str = "방영시작") -> pd.DataFrame:
+    """방영 시작일이 오늘 이후(미래)인 IP는 '집계/순위' 계산에서 제외합니다.
+
+    - date_col이 없으면, 흔한 대체 컬럼명(방영시작일/첫방/방송시작일 등) 중 존재하는 컬럼을 자동 탐색
+    - 문자열 날짜(예: '2024. 1. 1')도 안전하게 파싱
+    - 날짜가 NaT인 IP는 제외하지 않음 (데이터 품질 이슈로 인한 과도한 누락 방지)
     """
     if df is None or df.empty:
         return df
-    if date_col not in df.columns:
+
+    # 사용할 날짜 컬럼 결정
+    candidates = [date_col, "방영시작일", "첫방", "방송시작일", "방영일", "start_date", "startDate"]
+    col = next((c for c in candidates if c in df.columns), None)
+    if col is None:
         return df
 
-    # '오늘' 기준 (시간 제거)
-    today = pd.Timestamp(datetime.datetime.now().date())
+    # KST 기준 '오늘' (시간 제거)
+    today = pd.Timestamp.now(tz="Asia/Seoul").normalize().tz_localize(None)
 
-    # IP별 방영시작일 최소값으로 미래 방영 IP 판정 (데이터 행마다 값이 달라도 안전)
+    # 문자열(예: '2024. 1. 1') → datetime 파싱
+    s = df[col]
+    if not pd.api.types.is_datetime64_any_dtype(s):
+        s = (
+            s.astype(str)
+             .str.strip()
+             .str.replace(r"\s+", "", regex=True)   # 공백 제거
+             .str.replace(".", "-", regex=False)    # 2024.1.1 → 2024-1-1
+        )
+        s = pd.to_datetime(s, errors="coerce")
+
+    # IP별 방영시작일 최소값으로 미래 방영 IP 판정
     try:
-        start_min = df.groupby("IP")[date_col].min()
+        start_min = s.groupby(df["IP"]).min()
     except Exception:
         return df
 
