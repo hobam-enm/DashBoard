@@ -1,8 +1,8 @@
 # 📊 Overview / IP 성과 대시보드 — v2.0 
 
 
-#region [ 1. 라이브러리 임포트 ]
 # =====================================================
+#region [ 1. 라이브러리 임포트 ]
 import re
 from typing import List, Dict, Any, Optional 
 import time, uuid
@@ -18,23 +18,23 @@ import streamlit as st
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
 import gspread
 from google.oauth2.service_account import Credentials
-import extra_streamlit_components as stx  # [추가] 쿠키 매니저 라이브러리
+import extra_streamlit_components as stx
+from plotly import graph_objects as go
 #endregion
 
 
-#region [ 1-0. 페이지 설정  ]
 # =====================================================
+#region [ 2. 페이지 설정 ]
 st.set_page_config(
     page_title="Drama Dashboard",
     layout="wide",
     initial_sidebar_state="expanded"
 )
-#endregion
 
 
-#region [ 1-1. 입장게이트 - 쿠키 인증 ]#region [ 1-1. 입장게이트 - 쿠키 인증 (세션 보완) ]
 # =====================================================
-# [수정] _rerun 함수 복구
+#endregion
+#region [ 3. 인증/쿠키 게이트 ]
 def _rerun():
     if hasattr(st, "rerun"):
         st.rerun()
@@ -45,7 +45,6 @@ def _rerun():
 COOKIE_NAME = "dmb_auth_token"
 COOKIE_EXPIRY_DAYS = 1
 
-# [수정] 캐시 제거 (위젯 오류 방지)
 def get_cookie_manager():
     return stx.CookieManager(key="dmb_cookie_manager")
 
@@ -67,7 +66,6 @@ def check_password_with_cookie() -> bool:
     cookies = cookie_manager.get_all()
     current_token = cookies.get(COOKIE_NAME)
     
-    # 3. [핵심 수정] 인증 검사 (쿠키 OR 세션스테이트 둘 중 하나라도 통과면 OK)
     # 쿠키가 있거나, 방금 로그인을 성공해서 세션에 기록이 남아있다면 통과
     is_cookie_valid = (current_token == hashed_secret)
     is_session_valid = st.session_state.get("auth_success", False)
@@ -104,10 +102,8 @@ def check_password_with_cookie() -> bool:
 
 if not check_password_with_cookie():
     st.stop()
-#endregion
 
 
-#region [ 2. 공통 스타일 통합 ]
 # =====================================================
 
 st.markdown("""
@@ -194,7 +190,6 @@ section[data-testid="stSidebar"] .stButton > button {
     box-sizing: border-box;
     text-align: left;
     
-    padding: 16px 20px !important;  /* [수정] 높이 축소 */
     margin: 0 !important;
     
     border-radius: 0px !important;
@@ -246,7 +241,7 @@ section[data-testid="stSidebar"] .stSelectbox, section[data-testid="stSidebar"] 
 }
 .page-title-emoji { font-size: 26px; line-height: 1; }
 .page-title-main {
-    font-size: 26px; /* [수정] 폰트 크기 확대 */
+    font-size: 24px;
     font-weight: 800; 
     letter-spacing: -0.5px;
     line-height: 1.2;
@@ -348,20 +343,17 @@ h1, h2, h3 { color: #111827; font-weight: 800; letter-spacing: -0.02em; }
 
 </style>
 """, unsafe_allow_html=True)
-#endregion
 
 
-#region [ 2.1. 기본 설정 및 공통 상수 ]
 # =====================================================
 
 # ===== 네비게이션 아이템 정의 =====
-# [수정] 데모그래픽, 회차별 메뉴 제거 및 통합 반영
 NAV_ITEMS = {
     "Overview": "Overview",
     "IP 성과": "IP 성과 자세히보기",
+    "사전지표": "사전지표 분석",
     "비교분석": "성과 비교분석", 
-    "성장스코어-방영지표": "성장스코어-방영지표",
-    "성장스코어-디지털": "성장스코어-디지털",
+    "성장스코어": "성장스코어", 
 }
 
 # ===== 데모 컬럼 순서 (페이지 2, 3에서 공통 사용) =====
@@ -399,14 +391,14 @@ dashboard_theme = go.Layout(
 pio.templates['dashboard_theme'] = go.layout.Template(layout=dashboard_theme)
 pio.templates.default = 'dashboard_theme'
 # =====================================================
-#endregion
 
 
-#region [ 3. 공통 함수: 데이터 로드 / 유틸리티 ]
 # =====================================================
 
-# ===== 3.1. 데이터 로드 (gspread) =====
+# ===== 3.1. 데이터 로드 (MongoDB) =====
 @st.cache_data(ttl=600)
+#endregion
+#region [ 4. 데이터 로드 / 전처리 ]
 def load_data() -> pd.DataFrame:
     """
     [수정] Streamlit Secrets와 gspread를 사용하여 비공개 Google Sheet에서 데이터를 인증하고 로드합니다.
@@ -471,51 +463,6 @@ def load_data() -> pd.DataFrame:
 
 
 # ===== 3.x. 공통 필터: 방영 시작일이 '미래'인 IP 제외 (평균/순위 산정용) =====
-def _exclude_future_ips(df: pd.DataFrame, date_col: str = "방영시작") -> pd.DataFrame:
-    """방영 시작일이 오늘 이후(미래)인 IP는 '집계/순위' 계산에서 제외합니다.
-
-    - date_col이 없으면, 흔한 대체 컬럼명(방영시작일/첫방/방송시작일 등) 중 존재하는 컬럼을 자동 탐색
-    - 문자열 날짜(예: '2024. 1. 1')도 안전하게 파싱
-    - 날짜가 NaT인 IP는 제외하지 않음 (데이터 품질 이슈로 인한 과도한 누락 방지)
-    """
-    if df is None or df.empty:
-        return df
-
-    # 사용할 날짜 컬럼 결정
-    candidates = [date_col, "방영시작일", "첫방", "방송시작일", "방영일", "start_date", "startDate"]
-    col = next((c for c in candidates if c in df.columns), None)
-    if col is None:
-        return df
-
-    # KST 기준 '오늘' (시간 제거)
-    today = pd.Timestamp.now(tz="Asia/Seoul").normalize().tz_localize(None)
-
-    # 문자열(예: '2024. 1. 1') → datetime 파싱
-    s = df[col]
-    if not pd.api.types.is_datetime64_any_dtype(s):
-        s = (
-            s.astype(str)
-             .str.strip()
-             .str.replace(r"\s+", "", regex=True)   # 공백 제거
-             .str.replace(".", "-", regex=False)    # 2024.1.1 → 2024-1-1
-        )
-        s = pd.to_datetime(s, errors="coerce")
-
-    # IP별 방영시작일 최소값으로 미래 방영 IP 판정
-    try:
-        start_min = s.groupby(df["IP"]).min()
-    except Exception:
-        return df
-
-    future_ips = start_min[(start_min.notna()) & (start_min > today)].index.tolist()
-    if not future_ips:
-        return df
-
-    return df[~df["IP"].isin(future_ips)].copy()
-
-
-# ===== 3.2. UI / 포맷팅 헬퍼 함수 =====
-
 def fmt(v, digits=3, intlike=False):
     """
     숫자 포맷팅 헬퍼 (None이나 NaN은 '–'로 표시)
@@ -524,6 +471,8 @@ def fmt(v, digits=3, intlike=False):
         return "–"
     return f"{v:,.0f}" if intlike else f"{v:.{digits}f}"
 
+#endregion
+#region [ 5. 공통 유틸 / 컴포넌트 / 집계 ]
 def kpi(col, title, value):
     """
     Streamlit 컬럼 내에 KPI 카드를 렌더링합니다. (CSS .kpi-card 필요)
@@ -562,23 +511,20 @@ def get_current_page_default(default="Overview"):
             return default
         return p if isinstance(p, str) else p[0]
     except Exception:
-        qs = st.experimental_get_query_params()
-        return (qs.get("page", [default])[0])
+        # 구버전 호환성
+        return default
 
 def _set_page_query_param(page_key: str):
     """
-    URL 쿼리 파라미터에 page 키를 설정합니다. (리로드 없음)
+    URL 쿼리 파라미터에 page 키를 설정합니다.
     """
     try:
-        qp = st.query_params
-        qp["page"] = page_key
-        st.query_params = qp
+        st.query_params["page"] = page_key
     except Exception:
-        st.experimental_set_query_params(page=page_key)
+        pass
 
 def get_episode_options(df: pd.DataFrame) -> List[str]:
-    """데이터에서 사용 가능한 회차 목록 (문자열, '00' 제외, '차'/'화' 제거)을 추출합니다."""
-    
+    """데이터에서 사용 가능한 회차 목록 (문자열)을 추출합니다."""
     valid_options = []
     if "회차_numeric" in df.columns:
         unique_episodes_num = sorted([
@@ -586,25 +532,16 @@ def get_episode_options(df: pd.DataFrame) -> List[str]:
         ])
         if unique_episodes_num:
             max_ep_num = unique_episodes_num[-1]
-            for ep_num in unique_episodes_num: valid_options.append(str(ep_num))
-            last_ep_str_num = str(max_ep_num)
-            if last_ep_str_num in valid_options and valid_options[-1] != last_ep_str_num:
-                 valid_options.remove(last_ep_str_num); valid_options.append(last_ep_str_num)
+            valid_options = [str(ep) for ep in unique_episodes_num]
+            
+            last_ep_str = str(max_ep_num)
             if len(valid_options) > 0 and "(마지막화)" not in valid_options[-1]:
-                 valid_options[-1] = f"{valid_options[-1]} (마지막화)"
+                 valid_options[-1] = f"{last_ep_str} (마지막화)"
             return valid_options
-        else: return []
-    elif "회차" in df.columns:
-        raw_options = sorted(df["회차"].dropna().unique())
-        for opt in raw_options:
-            if not opt.startswith("00"):
-                cleaned_opt = re.sub(r"[화차]", "", opt)
-                if cleaned_opt.isdigit() and int(cleaned_opt) > 0: 
-                    valid_options.append(cleaned_opt)
-        return sorted(list(set(valid_options)), key=lambda x: int(x) if x.isdigit() else float('inf')) 
-    else: return []
+    return []
 
-# [신규] 피드백 3번 반영: 조회수 필터 로직 통합
+# ===== 3.4. 통합 데이터 필터링 유틸 =====
+
 def _get_view_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     '조회수' metric만 필터링하고, 유튜브 PGC/UGC 규칙을 적용하는 공통 유틸.
@@ -619,27 +556,153 @@ def _get_view_data(df: pd.DataFrame) -> pd.DataFrame:
         sub = sub[~yt_mask | (yt_mask & attr_mask)]
     
     return sub
-#endregion
+
+# ===== 3.5. 집계 계산 유틸 =====
+
+def _episode_col(df: pd.DataFrame) -> str:
+    """데이터프레임에 존재하는 회차 숫자 컬럼명을 반환합니다."""
+    return "회차_numeric" if "회차_numeric" in df.columns else ("회차_num" if "회차_num" in df.columns else "회차")
 
 
-#region [ 4. 사이드바 네비게이션 ]
-# =====================================================
+def _mean_of_ip_episode_agg(df: pd.DataFrame, metric_name: str, media=None, episode_agg: str = "sum") -> float | None:
+    """IP별 (회차 단위 집계 -> IP별 평균 -> 전체 평균) 값을 계산한다.
+    episode_agg: 'sum' or 'mean'
+    """
+    sub = df[(df["metric"] == metric_name)].copy()
+    if media is not None:
+        sub = sub[sub["매체"].isin(media)]
+    if sub.empty:
+        return None
+
+    ep_col = _episode_col(sub)
+    sub = sub.dropna(subset=[ep_col]).copy()
+
+    sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
+    sub = sub.dropna(subset=["value"])
+
+    if episode_agg == "mean":
+        ep_level = sub.groupby(["IP", ep_col], as_index=False)["value"].mean()
+    else:
+        ep_level = sub.groupby(["IP", ep_col], as_index=False)["value"].sum()
+
+    per_ip_mean = ep_level.groupby("IP")["value"].mean()
+    return float(per_ip_mean.mean()) if not per_ip_mean.empty else None
+
+
+def mean_of_ip_episode_sum(df: pd.DataFrame, metric_name: str, media=None) -> float | None:
+    return _mean_of_ip_episode_agg(df, metric_name, media=media, episode_agg="sum")
+
+def mean_of_ip_episode_mean(df: pd.DataFrame, metric_name: str, media=None) -> float | None:
+    return _mean_of_ip_episode_agg(df, metric_name, media=media, episode_agg="mean")
+
+def _mean_of_ip_sums_from_subset(sub: pd.DataFrame) -> float | None:
+    if sub.empty:
+        return None
+    sub = sub.copy()
+    sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
+    sub = sub.dropna(subset=["value"])
+    per_ip_sum = sub.groupby("IP")["value"].sum()
+    return float(per_ip_sum.mean()) if not per_ip_sum.empty else None
+
+
+def mean_of_ip_sums(df: pd.DataFrame, metric_name: str, media=None) -> float | None:
+    if metric_name == "조회수":
+        sub = _get_view_data(df)
+    else:
+        sub = df[df["metric"] == metric_name].copy()
+
+    if media is not None:
+        sub = sub[sub["매체"].isin(media)]
+
+    return _mean_of_ip_sums_from_subset(sub)
+
 current_page = get_current_page_default("Overview")
 st.session_state["page"] = current_page
 
-with st.sidebar:
+# 사이드바용 데이터 로드
+df_nav = load_data()
 
-    render_gradient_title("드라마 성과 대시보드", emoji="")
-    st.markdown(
-        "<p class='sidebar-contact' style='font-size:12px; color:gray;'>문의 : 미디어)마케팅팀 데이터인사이트파트</p>",
-        unsafe_allow_html=True
+# [수정] IP 리스트 정렬: '방영시작' 기준 최신순 (컬럼명 수정 반영)
+if not df_nav.empty and "방영시작" in df_nav.columns:
+    all_ips = (
+        df_nav.groupby("IP")["방영시작"]
+        .max()
+        .sort_values(ascending=False, na_position='last') # 최신순 정렬
+        .index.tolist()
     )
-    st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
-    st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
+else:
+    # '방영시작' 컬럼이 없거나 데이터가 비어있으면 기존 가나다순 유지
+    all_ips = sorted(df_nav["IP"].dropna().unique().tolist()) if not df_nav.empty else []
 
+
+with st.sidebar:
+    render_gradient_title("드라마 성과 대시보드", emoji="") # (폰트 키운 버전 적용됨)
+    
+    # ===== [추가] 전역 IP 셀렉트박스 스타일 (연한 배경 & 완벽한 가운데 정렬) =====
+    st.markdown("""
+    <style>
+    /* 셀렉트박스 배경 및 테두리 */
+    section[data-testid="stSidebar"] div[data-testid="stSelectbox"] div[data-baseweb="select"] > div {
+        background-color: #f1f5f9 !important; /* 연한 파스텔톤/회색 배경 */
+        border: 1px solid #e2e8f0 !important;
+        border-radius: 8px !important;
+        position: relative !important; /* 화살표 절대좌표 기준점 */
+    }
+    
+    /* 텍스트 컨테이너 가운데 정렬 (화살표 영역 무시하고 꽉 채우기) */
+    section[data-testid="stSidebar"] div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:first-child {
+        justify-content: center !important;
+        width: 100% !important;
+    }
+    
+    /* 텍스트 폰트 강조 및 정렬 */
+    section[data-testid="stSidebar"] div[data-testid="stSelectbox"] div[data-baseweb="select"] span {
+        text-align: center !important;
+        font-weight: 700 !important;
+        color: #0f172a !important;
+        font-size: 15px !important;
+        width: 100% !important;
+        display: block !important;
+    }
+    
+    /* [핵심] 우측 화살표 아이콘을 공중에 띄워서 텍스트를 왼쪽으로 밀어내지 않게 함 */
+    section[data-testid="stSidebar"] div[data-testid="stSelectbox"] div[data-baseweb="select"] > div > div:last-child {
+        position: absolute !important;
+        right: 12px !important;
+        top: 50% !important;
+        transform: translateY(-50%) !important;
+        pointer-events: none !important; 
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    # =================================================================
+    
+    # 1. 세션 상태 초기화 (없으면 None으로 설정)
+    if "global_ip" not in st.session_state:
+        st.session_state["global_ip"] = None
+
+    if all_ips:
+        # 2. 현재 선택된 IP의 인덱스 찾기 (없거나 None이면 idx는 None)
+        current_ip = st.session_state.get("global_ip")
+        idx = all_ips.index(current_ip) if current_ip in all_ips else None
+
+        selected_global_ip = st.selectbox(
+            "분석할 IP를 선택하세요",
+            all_ips,
+            index=idx,                       # None이면 placeholder가 보임
+            placeholder="IP를 선택해주세요",   # 디폴트 안내 문구
+            key="global_ip_select",
+            label_visibility="collapsed"
+        )
+        st.session_state["global_ip"] = selected_global_ip
+    else:
+        st.warning("데이터가 없습니다.")
+
+    st.divider()
+
+    # 네비게이션 메뉴
     for key, label in NAV_ITEMS.items():
         is_active = (current_page == key)
-        
         wrapper_cls = "nav-active" if is_active else "nav-inactive"
         st.markdown(f'<div class="{wrapper_cls}">', unsafe_allow_html=True)
 
@@ -655,77 +718,21 @@ with st.sidebar:
             st.session_state["page"] = key
             _set_page_query_param(key)
             _rerun()
-#endregion
+            
+    st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-top: 30px;'></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<p class='sidebar-contact' style='font-size:12px; color:gray;'>문의 : 미디어)마케팅팀 데이터인사이트파트</p>",
+        unsafe_allow_html=True
+    )
 
 
-#region [ 5. 공통 집계 유틸: KPI 계산 ]
 # =====================================================
-
-def _episode_col(df: pd.DataFrame) -> str:
-    """데이터프레임에 존재하는 회차 숫자 컬럼명을 반환합니다."""
-    return "회차_numeric" if "회차_numeric" in df.columns else ("회차_num" if "회차_num" in df.columns else "회차")
-
-def mean_of_ip_episode_sum(df: pd.DataFrame, metric_name: str, media=None) -> float | None:
-    df = _exclude_future_ips(df)
-    sub = df[(df["metric"] == metric_name)].copy()
-    if media is not None:
-        sub = sub[sub["매체"].isin(media)]
-    if sub.empty:
-        return None
-    ep_col = _episode_col(sub)
-    sub = sub.dropna(subset=[ep_col]).copy()
-    
-    sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
-    sub = sub.dropna(subset=["value"])
-
-    ep_sum = sub.groupby(["IP", ep_col], as_index=False)["value"].sum()
-    per_ip_mean = ep_sum.groupby("IP")["value"].mean()
-    return float(per_ip_mean.mean()) if not per_ip_mean.empty else None
+# NOTE: 집계 유틸은 상단의 '3.5. 집계 계산 유틸' 섹션에 단일 정의로 유지합니다.
+#       (중복 정의 방지: 결과값/동작 동일 유지)
 
 
-def mean_of_ip_episode_mean(df: pd.DataFrame, metric_name: str, media=None) -> float | None:
-    df = _exclude_future_ips(df)
-    sub = df[(df["metric"] == metric_name)].copy()
-    if media is not None:
-        sub = sub[sub["매체"].isin(media)]
-    if sub.empty:
-        return None
-    ep_col = _episode_col(sub)
-    sub = sub.dropna(subset=[ep_col]).copy()
-    
-    sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
-    sub = sub.dropna(subset=["value"])
 
-    ep_mean = sub.groupby(["IP", ep_col], as_index=False)["value"].mean()
-    per_ip_mean = ep_mean.groupby("IP")["value"].mean()
-    return float(per_ip_mean.mean()) if not per_ip_mean.empty else None
-
-
-def mean_of_ip_sums(df: pd.DataFrame, metric_name: str, media=None) -> float | None:
-    df = _exclude_future_ips(df)
-    
-    if metric_name == "조회수":
-        sub = _get_view_data(df) 
-    else:
-        sub = df[df["metric"] == metric_name].copy()
-
-    if media is not None:
-        sub = sub[sub["매체"].isin(media)]
-    
-    if sub.empty:
-        return None
-        
-    sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
-    sub = sub.dropna(subset=["value"])
-
-    per_ip_sum = sub.groupby("IP")["value"].sum()
-    return float(per_ip_sum.mean()) if not per_ip_sum.empty else None
-
-
-#endregion
-
-
-#region [ 6. 공통 집계 유틸: 데모  ]
 # =====================================================
 
 # ===== 6.1. 데모 문자열 파싱 유틸 =====
@@ -876,7 +883,6 @@ def render_gender_pyramid(container, title: str, df_src: pd.DataFrame, height: i
 def get_avg_demo_pop_by_episode(df_src: pd.DataFrame, medias: List[str], max_ep: float = None) -> pd.DataFrame:
     """
     여러 IP가 포함된 df_src에서, 회차별/데모별 *평균* 시청자수(시청인구)를 계산합니다.
-    [수정] max_ep 파라미터 추가: 지정된 회차까지만 필터링하여 계산
     """
     # 1. 매체 및 지표 필터링
     sub = df_src[
@@ -981,15 +987,47 @@ def render_heatmap(df_plot: pd.DataFrame, title: str):
     c_heatmap, = st.columns(1)
     with c_heatmap:
         st.plotly_chart(fig, use_container_width=True)
-#endregion
 
-
-#region [ 7. 페이지 1: Overview ]
 # =====================================================
+# [추가] 동일 편성 전작 찾기 유틸
+def get_previous_work_ip(df_full: pd.DataFrame, target_ip: str) -> str | None:
+    """
+    동일 편성 내에서, 타겟 IP보다 '방영시작일'이 바로 앞선 작품을 찾습니다.
+    """
+    if df_full.empty or "방영시작" not in df_full.columns: # 컬럼명 "방영시작" 체크
+        return None
+    
+    # 타겟 IP 정보
+    target_rows = df_full[df_full["IP"] == target_ip]
+    if target_rows.empty: return None
+    
+    # 타겟의 편성 및 방영시작일
+    target_prog = target_rows["편성"].dropna().iloc[0] if not target_rows["편성"].dropna().empty else None
+    target_start = target_rows["방영시작"].dropna().iloc[0] if not target_rows["방영시작"].dropna().empty else None
+    
+    if not target_prog or pd.isna(target_start): return None
+    
+    # 동일 편성 && 방영일이 타겟보다 이전인 작품들
+    candidates = df_full[
+        (df_full["편성"] == target_prog) & 
+        (df_full["방영시작"] < target_start) & 
+        (df_full["IP"] != target_ip)
+    ].copy()
+    
+    if candidates.empty: return None
+    
+    # 그 중에서 가장 최신(방영시작일이 가장 큰) 작품
+    prev_work = candidates.sort_values("방영시작", ascending=False).iloc[0]["IP"]
+    return prev_work
+
+# =====================================================
+#endregion
+#region [ 6. 페이지 렌더러 ]
+#region [ 6-1. Overview ]
 def render_overview():
     df = load_data() 
   
-    # --- 페이지 전용 필터 ---   
+    # ===== 페이지 전용 필터 =====   
     filter_cols = st.columns(4)
     
     with filter_cols[0]:
@@ -1005,7 +1043,9 @@ def render_overview():
         - **디지털 조회** `회차총합`: 방영주간 월~일 발생 총합 / 유튜브,인스타그램,틱톡,네이버TV,페이스북
         - **디지털 언급량** `회차총합`: 방영주차(월~일) 내 총합 / 커뮤니티,트위터,블로그                            
         - **화제성 점수** `회차평균`: 방영기간 주차별 화제성 점수의 평균 (펀덱스)
-        - **앵커드라마 기준**: 토일 3%↑, 월화 2%↑
+        - **앵커드라마 기준**: 
+          - ~25년: (수도권) 토일 3%↑, 월화 2%↑
+          - 26년~: (전국) 토일 2.5%↑, 월화 1.5%↑
         """).strip())
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -1018,7 +1058,7 @@ def render_overview():
             label_visibility="collapsed"
         )
 
-    # [수정] 연도 필터: '편성연도' 컬럼 사용 (날짜 파싱 X)
+    # 연도 필터: '편성연도' 컬럼 사용
     all_years = []
     if "편성연도" in df.columns:
         unique_vals = df["편성연도"].dropna().unique()
@@ -1027,7 +1067,7 @@ def render_overview():
         except:
             all_years = sorted([str(x) for x in unique_vals], reverse=True)
 
-    # [수정] 월 필터: 기존 날짜 컬럼 사용 (연도와 분리)
+    # 월 필터
     if "방영시작일" in df.columns and df["방영시작일"].notna().any():
         date_col_for_month = "방영시작일"
     else:
@@ -1054,28 +1094,37 @@ def render_overview():
             label_visibility="collapsed"
         )
 
-    # --- 필터 적용 ---
+    # ===== 필터 적용 =====
     f = df.copy()
     if prog_sel:
         f = f[f["편성"].isin(prog_sel)]
     
-    # [수정] 연도 필터 적용 (값 직접 비교)
     if year_sel and "편성연도" in f.columns:
         f = f[f["편성연도"].isin(year_sel)]
         
-    # [수정] 월 필터 적용 (기존 날짜 컬럼 활용)
     if month_sel and date_col_for_month in f.columns:
         f = f[f[date_col_for_month].dt.month.isin(month_sel)]
-    # [추가] 미래 방영 IP 제외 (평균/순위 산정용)
-    f = _exclude_future_ips(f)
 
 
-    # --- 요약카드 계산 서브함수 (KPI 공통 유틸 사용) ---
+    # ===== 내부 툴팁 전용 KPI 렌더링 함수 =====
+    def kpi_tooltip(col, title, value, tooltip_text):
+        # 쌍따옴표 등 특수문자가 HTML 구조를 깨지 않도록 안전하게 치환합니다.
+        safe_tooltip = str(tooltip_text).replace('"', '&quot;')
+        
+        with col:
+            st.markdown(
+                f'<div class="kpi-card" title="{safe_tooltip}">'
+                f'<div class="kpi-title">{title} <span title="{safe_tooltip}" style="cursor: help;">ℹ️</span></div>'
+                f'<div class="kpi-value">{value}</div></div>',
+                unsafe_allow_html=True
+            )
+
+    # ===== 요약카드 계산 서브함수 (KPI 공통 유틸 사용) =====
     def avg_of_ip_means(metric_name: str):
-        return mean_of_ip_episode_mean(f, metric_name) # [5. 공통 함수]
+        return mean_of_ip_episode_mean(f, metric_name)
 
     def avg_of_ip_tving_epSum_mean(media_name: str):
-        return mean_of_ip_episode_sum(f, "시청인구", [media_name]) # [5. 공통 함수]
+        return mean_of_ip_episode_sum(f, "시청인구", [media_name])
 
     def avg_of_ip_tving_quick():
         return mean_of_ip_episode_sum(f, "시청인구", ["TVING QUICK"])
@@ -1084,7 +1133,7 @@ def render_overview():
         return mean_of_ip_episode_sum(f, "시청인구", ["TVING VOD"])
 
     def avg_of_ip_sums(metric_name: str):
-        return mean_of_ip_sums(f, metric_name) # [5. 공통 함수]
+        return mean_of_ip_sums(f, metric_name)
 
     def count_ip_with_min1(metric_name: str):
         sub = f[f["metric"] == metric_name]
@@ -1092,18 +1141,76 @@ def render_overview():
         ip_min = sub.groupby("IP")["value"].min()
         return (ip_min == 1).sum()
 
-    def count_anchor_dramas():
-        sub = f[f["metric"]=="T시청률"].groupby(["IP","편성"])["value"].mean().reset_index()
-        mon_tue = sub[(sub["편성"]=="월화") & (sub["value"]>2)].shape[0]
-        sat_sun = sub[(sub["편성"]=="토일") & (sub["value"]>3)].shape[0]
-        return mon_tue + sat_sun
 
-    # --- 요약 카드 ---
+    # ===== 1. 앵커드라마 계산 로직 (툴팁 정보 포함) =====
+    def get_anchor_dramas_info():
+        sub = f[f["metric"] == "T시청률"].copy()
+        
+        if "편성연도" in sub.columns:
+            # 1) '24년', '2025년' 등에서 숫자만 추출
+            extracted_year = sub["편성연도"].astype(str).str.extract(r'(\d+)')[0].astype(float)
+            # 2) 2자리 연도(예: 24, 25)를 4자리 연도(2024, 2025)로 통일
+            sub["편성연도_num"] = extracted_year.apply(lambda x: x + 2000 if pd.notna(x) and x < 100 else x)
+            # 3) 예외 처리: 값을 못 찾았으면 기본값 2025 할당
+            sub["편성연도_num"] = sub["편성연도_num"].fillna(2025)
+        else:
+            sub["편성연도_num"] = 2025
+            
+        sub = sub.groupby(["IP", "편성", "편성연도_num"])["value"].mean().reset_index()
+        sub = sub[sub["IP"] != "신사장프로젝트"]
+        
+        # 2025년 이하 기준
+        cond_old_sat_sun = (sub["편성연도_num"] <= 2025) & (sub["편성"] == "토일") & (sub["value"] >= 3.0)
+        cond_old_mon_tue = (sub["편성연도_num"] <= 2025) & (sub["편성"] == "월화") & (sub["value"] >= 2.0)
+        
+        # 2026년 이상 기준
+        cond_new_sat_sun = (sub["편성연도_num"] >= 2026) & (sub["편성"] == "토일") & (sub["value"] >= 2.5)
+        cond_new_mon_tue = (sub["편성연도_num"] >= 2026) & (sub["편성"] == "월화") & (sub["value"] >= 1.5)
+        
+        anchor_dramas = sub[cond_old_sat_sun | cond_old_mon_tue | cond_new_sat_sun | cond_new_mon_tue]
+        anchor_dramas = anchor_dramas.sort_values(by="value", ascending=False)
+        
+        count = anchor_dramas.shape[0]
+        
+        # 툴팁용 텍스트 생성
+        tooltip_lines = []
+        for _, row in anchor_dramas.iterrows():
+            tooltip_lines.append(f"• {row['IP']} ({row['value']:.2f}%)")
+        tooltip_str = "&#10;".join(tooltip_lines) if tooltip_lines else "조건에 부합하는 앵커드라마가 없습니다."
+        
+        return count, tooltip_str
+
+
+    # ===== 펀덱스 Top3 랭크인 계산 로직 (툴팁 정보 포함) =====
+    def get_fundex_top3_info():
+        sub = f[f["metric"] == "F_Total"].copy()
+        if sub.empty:
+            return 0, "데이터 없음"
+            
+        # 3위 이내 데이터 추출
+        sub["value_num"] = pd.to_numeric(sub["value"], errors="coerce")
+        top3_sub = sub[sub["value_num"] <= 3]
+        
+        # 전체 랭크인 횟수
+        total_count = top3_sub.shape[0]
+        
+        # IP별 랭크인 횟수 산출 (내림차순 정렬)
+        ip_counts = top3_sub["IP"].value_counts()
+        
+        tooltip_lines = []
+        for ip, cnt in ip_counts.items():
+            tooltip_lines.append(f"• {ip} ({cnt}회 랭크인)")
+        tooltip_str = "&#10;".join(tooltip_lines) if tooltip_lines else "Top3 랭크인 작품이 없습니다."
+        
+        return total_count, tooltip_str
+
+
+    # ===== 요약 카드 렌더링 =====
     st.caption('▶ IP별 평균')
 
-    c1, c2, c3, c4, c5 = st.columns(5)
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
     st.markdown("<div style='margin-top:20px'></div>", unsafe_allow_html=True)
-    c6, c7, c8, c9, c10 = st.columns(5)
+    c7, c8, c9, c10, c11, c12 = st.columns(6)
 
     t_rating   = avg_of_ip_means("T시청률")
     h_rating   = avg_of_ip_means("H시청률")
@@ -1114,24 +1221,37 @@ def render_overview():
     digital_view = avg_of_ip_sums("조회수")
     digital_buzz = avg_of_ip_sums("언급량")
     f_score      = avg_of_ip_means("F_Score")
-    fundex_top1 = count_ip_with_min1("F_Total")
-    anchor_total = count_anchor_dramas()
+    fundex_top1  = count_ip_with_min1("F_Total")
+    
+    # 신규 추가된 함수 호출
+    anchor_total, anchor_tooltip = get_anchor_dramas_info()
+    fundex_top3_count, fundex_top3_tooltip = get_fundex_top3_info()
 
+    # --- 1행 --- 
     kpi(c1, "🎯 타깃 시청률", fmt(t_rating, digits=3))
     kpi(c2, "🏠 가구 시청률", fmt(h_rating, digits=3))
     kpi(c3, "📺 티빙 LIVE UV", fmt(tving_live, intlike=True))
     kpi(c4, "⚡ 티빙 당일 VOD UV", fmt(tving_quick, intlike=True)) 
     kpi(c5, "▶️ 티빙 주간 VOD UV", fmt(tving_vod, intlike=True))   
     
-    kpi(c6, "👀 디지털 조회수", fmt(digital_view, intlike=True))
-    kpi(c7, "💬 디지털 언급량", fmt(digital_buzz, intlike=True))
-    kpi(c8, "🔥 화제성 점수",  fmt(f_score, intlike=True))
-    kpi(c9, "🥇 펀덱스 1위", f"{fundex_top1}작품")
-    kpi(c10, "⚓ 앵커드라마", f"{anchor_total}작품")
+    # 빈 6번째 열에 보이지 않는 kpi-card를 삽입하여 CSS :has(.kpi-card) 예외 룰을 정상 작동시킵니다.
+    with c6:
+        st.markdown("<div class='kpi-card' style='visibility:hidden; border:none; box-shadow:none;'></div>", unsafe_allow_html=True)
+    
+    # --- 2행 ---
+    kpi(c7, "👀 디지털 조회수", fmt(digital_view, intlike=True))
+    kpi(c8, "💬 디지털 언급량", fmt(digital_buzz, intlike=True))
+    kpi(c9, "🔥 화제성 점수",  fmt(f_score, intlike=True))
+    kpi(c10, "🥇 펀덱스 1위", f"{fundex_top1}작품")
+    
+    # 신규 지표(툴팁 적용)
+    kpi_tooltip(c11, "🏆 펀덱스 Top3 랭크인", f"{fundex_top3_count}회", fundex_top3_tooltip)
+    kpi_tooltip(c12, "⚓ 앵커드라마", f"{anchor_total}작품", anchor_tooltip)
 
     st.divider()
 
-    # --- 주차별 시청자수 트렌드 (Stacked Bar) ---
+
+    # ===== 주차별 시청자수 트렌드 (Stacked Bar) =====
     df_trend = f[f["metric"]=="시청인구"].copy()
     if not df_trend.empty:
         tv_weekly = df_trend[df_trend["매체"]=="TV"].groupby("주차시작일")["value"].sum()
@@ -1202,14 +1322,15 @@ def render_overview():
 
     st.divider()
 
-    # --- 주요작품 테이블 (AgGrid) ---
+
+    # ===== 주요작품 테이블 (AgGrid) =====
     st.markdown("#### 🎬 전체 작품 RAW")
 
     def calculate_overview_performance(df):
         all_ips = df["IP"].unique()
         if len(all_ips) == 0: return pd.DataFrame()
 
-        ep_col = _episode_col(df) # [5. 공통 함수]
+        ep_col = _episode_col(df) 
         
         def _get_mean_of_ep_sums(df, metric_name, media_list=None):
             sub = df[df["metric"] == metric_name]
@@ -1252,22 +1373,26 @@ def render_overview():
 
     df_perf = calculate_overview_performance(f)
 
-    fmt_fixed3 = JsCode("""
-    function(params){
-      if (params.value == null || isNaN(params.value)) return '';
-      return Number(params.value).toFixed(3);
-    }""")
-    fmt_thousands = JsCode("""
-    function(params){
-      if (params.value == null || isNaN(params.value)) return '';
-      return Math.round(params.value).toLocaleString();
-    }""")
-    fmt_rank = JsCode("""
-    function(params){
-      if (params.value == null || isNaN(params.value)) return '';
-      if (params.value == 0) return '–';
-      return Math.round(params.value) + '위';
-    }""")
+    # 포맷터 정의
+    fmt_fixed3 = JsCode("""function(params){ if(params.value==null||isNaN(params.value))return ''; return Number(params.value).toFixed(3); }""")
+    fmt_thousands = JsCode("""function(params){ if(params.value==null||isNaN(params.value))return ''; return Math.round(params.value).toLocaleString(); }""")
+    fmt_rank = JsCode("""function(params){ if(params.value==null||isNaN(params.value))return ''; if(params.value==0) return '–'; return Math.round(params.value)+'위'; }""")
+
+    # 선택된 IP 행 하이라이트 스타일
+    target_ip = st.session_state.get("global_ip", "")
+    
+    highlight_jscode = JsCode(f"""
+    function(params) {{
+        if (params.data.IP === '{target_ip}') {{
+            return {{
+                'background-color': '#fffde7',  /* 연한 노란색 */
+                'font-weight': 'bold',
+                'border-left': '5px solid #d93636' /* 빨간 강조선 */
+            }};
+        }}
+        return {{}};
+    }}
+    """)
 
     gb = GridOptionsBuilder.from_dataframe(df_perf)
     gb.configure_default_column(
@@ -1275,7 +1400,14 @@ def render_overview():
         cellStyle={'textAlign': 'center'},
         headerClass='centered-header'
     )
-    gb.configure_grid_options(rowHeight=34, suppressMenuHide=True, domLayout='normal')
+    
+    # getRowStyle 적용
+    gb.configure_grid_options(
+        rowHeight=34, 
+        suppressMenuHide=True, 
+        domLayout='normal',
+        getRowStyle=highlight_jscode 
+    )
     
     gb.configure_column('IP', header_name='IP', cellStyle={'textAlign':'left'}) 
     gb.configure_column('타깃시청률', valueFormatter=fmt_fixed3, sort='desc')
@@ -1300,20 +1432,39 @@ def render_overview():
         allow_unsafe_jscode=True
     )
 #endregion
+#region [ 6-2. IP 성과 자세히보기 ]
 
+# [신규 추가] 본방 시작 여부 판단 헬퍼
+def get_aired_ips(df: pd.DataFrame) -> list:
+    """W1(1회차) 타깃시청률(T시청률) 데이터가 0 초과로 찍혀있는 IP 목록 반환"""
+    sub = df[df["metric"] == "T시청률"].copy()
+    sub["val"] = pd.to_numeric(sub["value"], errors="coerce").fillna(0)
+    
+    if "회차_numeric" not in sub.columns:
+        sub["회차_numeric"] = sub["회차"].astype(str).str.extract(r"(\d+)", expand=False).astype(float)
+    
+    # 1회차 T시청률이 0 초과인 경우 방영작으로 간주
+    aired_ips = sub[(sub["회차_numeric"] == 1) & (sub["val"] > 0)]["IP"].unique().tolist()
+    
+    # (안전장치) 1회차가 명시적으로 표기되지 않았더라도 T시청률이 0 초과로 존재하면 방영작으로 포함
+    fallback_ips = sub[sub["val"] > 0]["IP"].unique().tolist()
+    
+    return list(set(aired_ips) | set(fallback_ips))
 
-#region [ 8. 페이지 2: IP 성과 자세히보기 ]
-# =====================================================
 def render_ip_detail():
     
     df_full = load_data() # [3. 공통 함수]
 
-    # [수정] 컬럼 비율 조정
-    # 순서: 타이틀(3) | IP선택(2) | 방영연도(2) | 편성기준(2)
-    filter_cols = st.columns([3, 2, 2, 2])
+    ip_selected = st.session_state.get("global_ip")
+    if not ip_selected or ip_selected not in df_full["IP"].values:
+        st.error("선택된 IP 정보가 없습니다.")
+        return
+
+    filter_cols = st.columns([5, 2, 2])
 
     with filter_cols[0]:
-        st.markdown("<div class='page-title'>📈 IP 성과 자세히보기</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='page-title'>📈 {ip_selected} 성과 상세</div>", unsafe_allow_html=True)
+    
     with st.expander("ℹ️ 지표 기준 안내", expanded=False):
         st.markdown("<div class='gd-guideline'>", unsafe_allow_html=True)
         st.markdown(textwrap.dedent("""
@@ -1328,20 +1479,7 @@ def render_ip_detail():
         """).strip())
         st.markdown("</div>", unsafe_allow_html=True)
 
-    ip_options = sorted(df_full["IP"].dropna().unique().tolist())
-    
-    # [Col 1] IP 선택
-    with filter_cols[1]:
-        ip_selected = st.selectbox(
-            "IP (단일선택)",
-            ip_options,
-            index=0 if ip_options else None,
-            placeholder="IP 선택",
-            label_visibility="collapsed"
-        )
-
     # --- 데이터 전처리 (Default 설정을 위해 위치 이동) ---
-    # [수정] 방영 연도 필터 기준을 '편성연도' 컬럼으로 변경 (날짜 파싱 X)
     date_col_for_filter = "편성연도"
 
     target_ip_rows = df_full[df_full["IP"] == ip_selected]
@@ -1352,7 +1490,6 @@ def render_ip_detail():
     
     if not target_ip_rows.empty:
         try:
-            # [수정] 날짜 파싱(.dt.year) 없이 값 그대로 모드 추출
             if date_col_for_filter in target_ip_rows.columns:
                 y_mode = target_ip_rows[date_col_for_filter].dropna().mode()
                 if not y_mode.empty:
@@ -1363,17 +1500,15 @@ def render_ip_detail():
             pass
             
     all_years = []
-    # [수정] '편성연도' 컬럼의 고유값을 그대로 사용
     if date_col_for_filter in df_full.columns:
         unique_vals = df_full[date_col_for_filter].dropna().unique()
         try:
             all_years = sorted(unique_vals, reverse=True)
         except:
-            # 정렬 실패(타입 혼재 등) 시 문자열 변환 후 정렬
             all_years = sorted([str(x) for x in unique_vals], reverse=True)
 
-    # [Col 2] 방영 연도
-    with filter_cols[2]:
+    # [Col 1] 방영 연도
+    with filter_cols[1]:
         selected_years = st.multiselect(
             "방영 연도",
             all_years,
@@ -1382,23 +1517,28 @@ def render_ip_detail():
             label_visibility="collapsed"
         )
 
-    # [Col 3] 편성 기준 (옵션 확장 및 수목->평일 디폴트 로직 적용)
-    with filter_cols[3]:
-        # 1. IP의 기본 편성 확인 (수목인지 체크)
-        default_idx = 0 # 기본: 동일 편성
-        if sel_prog == "수목":
-            default_idx = 5 # '평일' 옵션의 인덱스 (아래 리스트 기준 5번째)
-
-        # 2. 셀렉트박스 생성
+    # [Col 2] 동일 편성 여부 (셀렉트박스)
+    with filter_cols[2]:
+        comp_options = ["동일 편성", "전체", "월화", "수목", "토일", "평일"]
+        default_comp = "평일" if (sel_prog == "수목") else "동일 편성"
         comp_type = st.selectbox(
             "편성 기준",
-            ["동일 편성", "전체", "토일", "월화", "수목", "평일"], 
-            index=default_idx,
+            comp_options,
+            index=comp_options.index(default_comp),
             label_visibility="collapsed"
         )
+
         use_same_prog = (comp_type == "동일 편성")
 
-    # --- 선택 IP 데이터 필터링 ---
+        # 비교 그룹 편성 필터(없으면 전체)
+        comp_prog_filter = None
+        if comp_type == "평일":
+            comp_prog_filter = ["월화", "수목"]
+        elif comp_type in ["월화", "수목", "토일"]:
+            comp_prog_filter = [comp_type]
+        elif use_same_prog:
+            comp_prog_filter = [sel_prog] if sel_prog else None
+# --- 선택 IP 데이터 필터링 ---
     f = target_ip_rows.copy()
 
     if "회차_numeric" in f.columns:
@@ -1418,37 +1558,31 @@ def render_ip_detail():
 
     # --- 베이스(비교 그룹) 데이터 필터링 ---
     base_raw = df_full.copy()
+    
+    # [추가] 비교 대상은 본방이 시작된(T시청률 0초과) 작품만 남기기
+    # (단, 현재 선택된 타깃 IP는 방영 전이더라도 기준점이 되므로 예외적으로 포함시킵니다)
+    aired_ips = get_aired_ips(base_raw)
+    base_raw = base_raw[base_raw["IP"].isin(aired_ips) | (base_raw["IP"] == ip_selected)]
+    
     group_name_parts = []
 
-    # [중요] 방영시작 기준 미래작품 제외 (오늘 이후 시작하는 IP는 비교군에서 제외)
-    base_raw = _exclude_future_ips(base_raw)
-
-
-    # 1. 편성 기준 필터 적용
-    if comp_type == "동일 편성":
-        if sel_prog:
-            base_raw = base_raw[base_raw["편성"] == sel_prog]
-            group_name_parts.append(f"'{sel_prog}'")
-        else:
+    # 1. 편성 기준 필터
+    if comp_prog_filter is not None:
+        # '동일 편성'인데 IP 편성 정보가 없으면, 필터를 건너뜀
+        if use_same_prog and not sel_prog:
             st.warning(f"'{ip_selected}'의 편성 정보가 없어 '동일 편성' 기준은 제외됩니다.", icon="⚠️")
+        else:
+            base_raw = base_raw[base_raw["편성"].isin(comp_prog_filter)]
 
-    elif comp_type == "평일":
-        # [요청사항] 평일 = 월화 + 수목
-        base_raw = base_raw[base_raw["편성"].isin(["월화", "수목"])]
-        group_name_parts.append("'평일(월화+수목)'")
-
-    elif comp_type == "전체":
-        # 필터 없음
-        pass
-
-    else:
-        # 토일, 월화, 수목 (직접 선택)
-        base_raw = base_raw[base_raw["편성"] == comp_type]
-        group_name_parts.append(f"'{comp_type}'")
+            if comp_type == "평일":
+                group_name_parts.append("'평일(월화+수목)'")
+            elif comp_type in ["월화", "수목", "토일"]:
+                group_name_parts.append(f"'{comp_type}'")
+            elif use_same_prog and sel_prog:
+                group_name_parts.append(f"'{sel_prog}'")
 
     # 2. 방영 연도 필터
     if selected_years:
-        # 날짜 파싱(.dt.year) 없이 컬럼 값 그대로 비교
         base_raw = base_raw[base_raw[date_col_for_filter].isin(selected_years)]
         
         if len(selected_years) <= 3:
@@ -1534,12 +1668,23 @@ def render_ip_detail():
         else: sub = _metric_filter(base_df, metric_name).copy()
         if media is not None: sub = sub[sub["매체"].isin(media)]
         if sub.empty: return pd.Series(dtype=float)
+
+        # [신규] 넷플릭스 순위 등 '회차' 정보가 없을 수 있는 지표 예외 처리
+        if metric_name == "N_W순위":
+            sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
+            sub = sub.dropna(subset=["value"])
+            if sub.empty: return pd.Series(dtype=float)
+            if mode == "min": s = sub.groupby("IP")["value"].min()
+            elif mode == "mean": s = sub.groupby("IP")["value"].mean()
+            else: s = sub.groupby("IP")["value"].min()
+            return pd.to_numeric(s, errors="coerce").dropna()
+
         ep_col = _episode_col(sub)
         sub = sub.dropna(subset=[ep_col])
         sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
         sub = sub.dropna(subset=["value"])
         if sub.empty: return pd.Series(dtype=float)
-        
+
         if mode == "mean":
             ep_mean = sub.groupby(["IP", ep_col], as_index=False)["value"].mean()
             s = ep_mean.groupby("IP")["value"].mean()
@@ -1577,6 +1722,13 @@ def render_ip_detail():
     val_live = mean_of_ip_episode_sum(f, "시청인구", ["TVING LIVE"])
     val_quick = mean_of_ip_episode_sum(f, "시청인구", ["TVING QUICK"]) 
     val_vod = mean_of_ip_episode_sum(f, "시청인구", ["TVING VOD"])
+
+    # [신규] Wavve VOD (metric="시청자수", media="웨이브")
+    val_wavve = mean_of_ip_episode_sum(f, "시청자수", ["웨이브"])
+
+    # [신규] Netflix Best Rank
+    val_netflix_best = _min_of_ip_metric(f, "N_W순위")
+
     val_buzz = mean_of_ip_sums(f, "언급량")
     val_view = mean_of_ip_sums(f, "조회수")
     val_topic_min = _min_of_ip_metric(f, "F_Total")
@@ -1587,6 +1739,13 @@ def render_ip_detail():
     base_live = mean_of_ip_episode_sum(base, "시청인구", ["TVING LIVE"])
     base_quick = mean_of_ip_episode_sum(base, "시청인구", ["TVING QUICK"])
     base_vod = mean_of_ip_episode_sum(base, "시청인구", ["TVING VOD"])
+
+    # [신규] Wavve VOD Base
+    base_wavve = mean_of_ip_episode_sum(base, "시청자수", ["웨이브"])
+
+    # [신규] Netflix Base
+    base_netflix_series = _series_ip_metric(base, "N_W순위", mode="min")
+    base_netflix_best = float(base_netflix_series.mean()) if not base_netflix_series.empty else None
     base_buzz = mean_of_ip_sums(base, "언급량")
     base_view = mean_of_ip_sums(base, "조회수")
     base_topic_min_series = _series_ip_metric(base, "F_Total", mode="min")
@@ -1607,6 +1766,12 @@ def render_ip_detail():
     rk_live  = _rank_within_program(base, "시청인구", ip_selected, val_live,  mode="ep_sum_mean", media=["TVING LIVE"])
     rk_quick = _rank_within_program(base, "시청인구", ip_selected, val_quick, mode="ep_sum_mean", media=["TVING QUICK"])
     rk_vod   = _rank_within_program(base, "시청인구", ip_selected, val_vod,   mode="ep_sum_mean", media=["TVING VOD"])
+
+    # [신규] Wavve Rank
+    rk_wavve = _rank_within_program(base, "시청자수", ip_selected, val_wavve, mode="ep_sum_mean", media=["웨이브"])
+
+    # [신규] Netflix Rank
+    rk_netflix = _rank_within_program(base, "N_W순위", ip_selected, val_netflix_best, mode="min", media=None, low_is_good=True)
     rk_buzz  = _rank_within_program(base, "언급량",   ip_selected, val_buzz,  mode="sum",        media=None)
     rk_view  = _rank_within_program(base, "조회수",   ip_selected, val_view,  mode="sum",        media=None)
     rk_fmin  = _rank_within_program(base, "F_Total",  ip_selected, val_topic_min, mode="min",   media=None, low_is_good=True)
@@ -1618,7 +1783,6 @@ def render_ip_detail():
         pct = (val / base_val) * 100
         return "#d93636" if pct > 100 else ("#2a61cc" if pct < 100 else "#444")
 
-    # [수정] 순위 표시에 '총 N개 중' 및 '1위 왕관' 추가
     def sublines_html(prog_label: str, rank_tuple: tuple, val, base_val):
         rnk, total = rank_tuple if rank_tuple else (None, 0)
         
@@ -1683,12 +1847,24 @@ def render_ip_detail():
         )
     kpi_with_rank(c9, "🔥 화제성 점수", val_topic_avg, base_topic_avg, rk_fscr, prog_label, intlike=True)
     with c10:
-        # 더미 카드 (레이아웃 맞춤용, 투명 처리)
-        st.markdown(
-            f"<div class='kpi-card' style='opacity:0; pointer-events:none;'><div class='kpi-title'>-</div>"
-            f"<div class='kpi-value'>-</div>{sublines_dummy()}</div>",
-            unsafe_allow_html=True
-        )
+        if val_wavve is not None and not pd.isna(val_wavve):
+            kpi_with_rank(c10, "🌊 웨이브 VOD UV", val_wavve, base_wavve, rk_wavve, prog_label, intlike=True)
+
+        elif val_netflix_best is not None and not pd.isna(val_netflix_best) and val_netflix_best > 0:
+            main_val = f"{int(val_netflix_best)}위"
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>🍿 넷플릭스 최고순위</div>"
+                f"<div class='kpi-value'>{main_val}</div>{sublines_dummy()}</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            # 둘 다 없으면 비워두기
+            st.markdown(
+                f"<div class='kpi-card' style='opacity:0; pointer-events:none;'><div class='kpi-title'>-</div>"
+                f"<div class='kpi-value'>-</div>{sublines_dummy()}</div>",
+                unsafe_allow_html=True
+            )
+
 
     st.divider()
 
@@ -1726,52 +1902,88 @@ def render_ip_detail():
             st.info("표시할 시청률 데이터가 없습니다.")
 
     with cB:
-        st.markdown("<div class='sec-title'>📱 TVING 시청자수</div>", unsafe_allow_html=True)
+        # TVING 데이터
         t_keep = ["TVING LIVE", "TVING QUICK", "TVING VOD"]
         tsub = f[(f["metric"] == "시청인구") & (f["매체"].isin(t_keep))].dropna(subset=["회차", "회차_num"]).copy()
         tsub = tsub.sort_values("회차_num")
-        
-        if not tsub.empty:
-            media_map = {"TVING LIVE": "LIVE", "TVING QUICK": "당일 VOD", "TVING VOD": "주간 VOD"}
-            tsub["매체_표기"] = tsub["매체"].map(media_map)
-            
-            pvt = tsub.pivot_table(index="회차", columns="매체_표기", values="value", aggfunc="sum").fillna(0)
-            ep_order = tsub[["회차", "회차_num"]].drop_duplicates().sort_values("회차_num")["회차"].tolist()
+
+        # [신규] Wavve 데이터 (있으면 같은 그래프에 추가)
+        wsub = f[(f["metric"] == "시청자수") & (f["매체"] == "웨이브")].dropna(subset=["회차", "회차_num"]).copy()
+        wsub = wsub.sort_values("회차_num")
+        has_wavve = not wsub.empty
+
+        chart_title = "📱 TVING & Wavve 시청자수" if has_wavve else "📱 TVING 시청자수"
+        st.markdown(f"<div class='sec-title'>{chart_title}</div>", unsafe_allow_html=True)
+
+        if not tsub.empty or has_wavve:
+            combined = pd.DataFrame()
+
+            if not tsub.empty:
+                media_map = {"TVING LIVE": "LIVE", "TVING QUICK": "당일 VOD", "TVING VOD": "주간 VOD"}
+                tsub["매체_표기"] = tsub["매체"].map(media_map)
+                combined = pd.concat([combined, tsub[["회차", "회차_num", "매체_표기", "value"]]])
+
+            if has_wavve:
+                wsub["매체_표기"] = "Wavve"
+                combined = pd.concat([combined, wsub[["회차", "회차_num", "매체_표기", "value"]]])
+
+            pvt = combined.pivot_table(index="회차", columns="매체_표기", values="value", aggfunc="sum").fillna(0)
+            ep_order = combined[["회차", "회차_num"]].drop_duplicates().sort_values("회차_num")["회차"].tolist()
             pvt = pvt.reindex(ep_order)
-            
-            stack_order = ["LIVE", "당일 VOD", "주간 VOD"]
-            colors = {"LIVE": "#90caf9", "당일 VOD": "#64b5f6", "주간 VOD": "#1565c0"}
-            
-            fig_tving = go.Figure()
-            for m in stack_order:
+
+            tving_stack_order = ["LIVE", "당일 VOD", "주간 VOD"]
+            tving_colors = {"LIVE": "#90caf9", "당일 VOD": "#64b5f6", "주간 VOD": "#1565c0"}
+
+            fig_ott = go.Figure()
+
+            # 1) TVING (항상 표시)
+            for m in tving_stack_order:
                 if m in pvt.columns:
-                    # [수정] 계열별 레이블(text) 제거
-                    fig_tving.add_trace(go.Bar(
+                    fig_ott.add_trace(go.Bar(
                         name=m, x=pvt.index, y=pvt[m],
-                        marker_color=colors[m],
-                        text=None, # 레이블 제거
+                        marker_color=tving_colors[m],
+                        text=None,
                         hovertemplate=f"<b>%{{x}}</b><br>{m}: %{{y:,.0f}}<extra></extra>"
                     ))
-            
-            total_vals = pvt[list(set(pvt.columns) & set(stack_order))].sum(axis=1)
-            max_val = total_vals.max()
-            total_txt = [fmt_live_kor(v) for v in total_vals]
-            
-            # 총합 레이블만 유지
-            fig_tving.add_trace(go.Scatter(
-                x=pvt.index, y=total_vals, mode='text',
-                text=total_txt, textposition='top center',
-                textfont=dict(size=11, color='#333'),
-                showlegend=False, hoverinfo='skip'
-            ))
 
-            fig_tving.update_layout(
-                barmode='stack', height=chart_h, margin=dict(l=8, r=8, t=10, b=8),
+            # 2) Wavve (기본 숨김)
+            if "Wavve" in pvt.columns:
+                fig_ott.add_trace(go.Bar(
+                    name="Wavve", x=pvt.index, y=pvt["Wavve"],
+                    marker_color="#5c6bc0",
+                    visible='legendonly',
+                    text=None,
+                    hovertemplate="<b>%{x}</b><br>Wavve: %{y:,.0f}<extra></extra>"
+                ))
+
+            # 3) Total 텍스트는 TVING 합계 기준 (기본 뷰 유지)
+            tving_cols = [c for c in pvt.columns if c in tving_stack_order]
+            if tving_cols:
+                total_vals = pvt[tving_cols].sum(axis=1)
+                max_val = total_vals.max()
+                if "Wavve" in pvt.columns:
+                    max_val = max(max_val, (total_vals + pvt["Wavve"]).max())
+                total_txt = [fmt_live_kor(v) for v in total_vals]
+
+                fig_ott.add_trace(go.Scatter(
+                    x=pvt.index, y=total_vals, mode='text',
+                    text=total_txt, textposition='top center',
+                    textfont=dict(size=11, color='#333'),
+                    showlegend=False, hoverinfo='skip'
+                ))
+            else:
+                total_vals = pvt.sum(axis=1)
+                max_val = total_vals.max()
+
+            fig_ott.update_layout(
+                barmode='stack',
+                height=chart_h,
+                margin=dict(l=8, r=8, t=10, b=8),
                 legend=dict(orientation='h', yanchor='bottom', y=1.02),
-                yaxis=dict(showgrid=False, visible=False, range=[0, max_val * 1.2]),
-                xaxis=dict(categoryorder="array", categoryarray=ep_order, fixedrange=True)
+                yaxis=dict(title=None, range=[0, max_val * 1.25] if pd.notna(max_val) else None),
+                xaxis=dict(title=None, fixedrange=True),
             )
-            st.plotly_chart(fig_tving, use_container_width=True, config=common_cfg)
+            st.plotly_chart(fig_ott, use_container_width=True, config=common_cfg)
         else:
             st.info("표시할 TVING 시청자 데이터가 없습니다.")
 
@@ -1848,9 +2060,13 @@ def render_ip_detail():
         _render_pyramid_local(cI, "", vod_demo, height=260)
 
     # === [Row3] 디지털&화제성 ===
-    cC, cD, cE = st.columns(3)
     digital_colors = ['#5c6bc0', '#7e57c2', '#26a69a', '#66bb6a', '#ffa726', '#ef5350']
-    
+
+    # ----------------------------
+    # Row3-1: 디지털 (2열)
+    # ----------------------------
+    cC, cD = st.columns(2)
+
     with cC:
         st.markdown("<div class='sec-title'>💻 디지털 조회수</div>", unsafe_allow_html=True)
         dview = _get_view_data(f) 
@@ -1930,6 +2146,11 @@ def render_ip_detail():
         else:
             st.info("표시할 언급량 데이터가 없습니다.")
 
+    # ----------------------------
+    # Row3-2: 화제성/OTT (2열)
+    # ----------------------------
+    cE, cF = st.columns(2)
+
     with cE:
         st.markdown("<div class='sec-title'>🔥 화제성 점수 & 순위</div>", unsafe_allow_html=True)
         fdx = _metric_filter(f, "F_Total").copy(); fs = _metric_filter(f, "F_score").copy()
@@ -1942,21 +2163,28 @@ def render_ip_detail():
         if not fs.empty:
             fs["val"] = pd.to_numeric(fs["value"], errors="coerce")
             fs_agg = fs.dropna(subset=[key_col]).groupby(key_col, as_index=False)["val"].mean()
-        else: fs_agg = pd.DataFrame(columns=[key_col, "val"])
+        else:
+            fs_agg = pd.DataFrame(columns=[key_col, "val"])
             
         if not fdx.empty:
             fdx["rank"] = pd.to_numeric(fdx["value"], errors="coerce")
             fdx_agg = fdx.dropna(subset=[key_col]).groupby(key_col, as_index=False)["rank"].min()
-        else: fdx_agg = pd.DataFrame(columns=[key_col, "rank"])
+        else:
+            fdx_agg = pd.DataFrame(columns=[key_col, "rank"])
             
         if not fs_agg.empty:
             merged = pd.merge(fs_agg, fdx_agg, on=key_col, how="left")
-            if use_category: merged = merged.set_index(key_col).reindex(order).dropna(subset=["val"]).reset_index()
-            else: merged = merged.sort_values(key_col)
+            if use_category:
+                merged = merged.set_index(key_col).reindex(order).dropna(subset=["val"]).reset_index()
+            else:
+                merged = merged.sort_values(key_col)
             
             if not merged.empty:
                 x_vals = merged[key_col].tolist(); y_vals = merged["val"].tolist()
-                labels = [f"{int(r['rank'])}위<br>/{int(r['val']):,}점" if pd.notna(r['rank']) else f"{int(r['val']):,}점" for _, r in merged.iterrows()]
+                labels = [
+                    f"{int(r['rank'])}위<br>/{int(r['val']):,}점" if pd.notna(r['rank']) else f"{int(r['val']):,}점"
+                    for _, r in merged.iterrows()
+                ]
                 
                 fig_comb = go.Figure()
                 fig_comb.add_trace(go.Scatter(
@@ -1964,12 +2192,54 @@ def render_ip_detail():
                     text=labels, textposition="top center", textfont=dict(size=11, color="#333"),
                     line=dict(color='#ec407a', width=3), marker=dict(size=7, color='#ec407a')
                 ))
-                if y_vals: fig_comb.update_yaxes(range=[0, max(y_vals) * 1.25], title=None, fixedrange=True)
-                if use_category: fig_comb.update_xaxes(categoryorder="array", categoryarray=x_vals, fixedrange=True)
+                if y_vals:
+                    fig_comb.update_yaxes(range=[0, max(y_vals) * 1.25], title=None, fixedrange=True)
+                if use_category:
+                    fig_comb.update_xaxes(categoryorder="array", categoryarray=x_vals, fixedrange=True)
                 fig_comb.update_layout(legend_title=None, height=chart_h, margin=dict(l=8, r=8, t=20, b=8))
                 st.plotly_chart(fig_comb, use_container_width=True, config=common_cfg)
-            else: st.info("데이터 없음")
-        else: st.info("데이터 없음")
+            else:
+                st.info("데이터 없음")
+        else:
+            st.info("데이터 없음")
+
+    with cF:
+        st.markdown("<div class='sec-title'>🍿 넷플릭스 주간 순위 추이</div>", unsafe_allow_html=True)
+        n_df = _metric_filter(f, "N_W순위").copy()
+        n_df["val"] = pd.to_numeric(n_df["value"], errors="coerce").replace(0, np.nan)
+        n_df = n_df.dropna(subset=["val"])
+
+        if not n_df.empty:
+            if has_week_col and f["주차"].notna().any():
+                n_agg = n_df.groupby("주차", as_index=False)["val"].min()
+                all_weeks = (f[["주차", "주차_num"]].dropna().drop_duplicates().sort_values("주차_num")["주차"].tolist())
+                n_agg = n_agg.set_index("주차").reindex(all_weeks).dropna().reset_index()
+                x_vals = n_agg["주차"]; use_cat = True
+            else:
+                n_agg = n_df.groupby("주차시작일", as_index=False)["val"].min().sort_values("주차시작일")
+                x_vals = n_agg["주차시작일"]; use_cat = False
+
+            y_vals = n_agg["val"]
+            labels = [f"{int(v)}위" for v in y_vals]
+
+            fig_nf = go.Figure()
+            fig_nf.add_trace(go.Scatter(
+                x=x_vals, y=y_vals, mode="lines+markers+text",
+                name="넷플릭스 순위",
+                line=dict(color="#f44336", width=3),
+                marker=dict(size=7, color="#f44336"),
+                text=labels, textposition="top center", textfont=dict(size=11, color="#333"),
+                hovertemplate="<b>%{x}</b><br>Rank: %{y:,.0f}<extra></extra>"
+            ))
+
+            # 순위는 낮을수록 좋으니 축을 뒤집어 보이게
+            fig_nf.update_yaxes(autorange="reversed", title=None, fixedrange=True)
+            if use_cat:
+                fig_nf.update_xaxes(categoryorder="array", categoryarray=list(x_vals), fixedrange=True)
+            fig_nf.update_layout(legend_title=None, height=chart_h, margin=dict(l=8, r=8, t=20, b=8))
+            st.plotly_chart(fig_nf, use_container_width=True, config=common_cfg)
+        else:
+            st.markdown("<div style='height: 20px;'></div>", unsafe_allow_html=True)
 
     st.divider()
 
@@ -2032,7 +2302,6 @@ def render_ip_detail():
     # === JS 렌더러 (▲/▾ + 행별 그라디언트) ===
 
     # DiffRenderer: 전 회차 대비 ▲/▾ 표시
-    # [수정] DiffRenderer: 주석 스타일 변경(//) 및 특수문자 HTML Entity 사용
     diff_renderer = JsCode("""
     class DiffRenderer {
       init(params) {
@@ -2146,7 +2415,6 @@ def render_ip_detail():
         gb.configure_grid_options(
             rowHeight=34,
             suppressMenuHide=True,
-            # domLayout는 사용 안 함 (height를 직접 계산해서 지정)
         )
 
         gb.configure_default_column(
@@ -2172,11 +2440,10 @@ def render_ip_detail():
                 cellStyle=cell_style_renderer,
             )
 
-        # 🔹 행 수에 따라 height 동적 계산
         rows = len(df_numeric)
         base_row_height = 34
         header_height = 34
-        max_visible_rows = 17   # 12화까지는 스크롤 없이 한 번에 보이도록
+        max_visible_rows = 17 
 
         if rows <= max_visible_rows:
             height = base_row_height * rows + header_height + 24
@@ -2190,7 +2457,7 @@ def render_ip_detail():
             height=height,
             fit_columns_on_grid_load=True,
             update_mode=GridUpdateMode.NO_UPDATE,
-            allow_unsafe_jscode=True,  # JS 사용
+            allow_unsafe_jscode=True,  
         )
 
     tv_numeric = _build_demo_table_numeric(f, ["TV"])
@@ -2202,13 +2469,7 @@ def render_ip_detail():
     _render_aggrid_table(tving_numeric, "▶︎ TVING 합산 시청자수")
 
 
-
-#endregion
-
-
-#region [ 9. 페이지 3: IP간 비교분석 (통합) ]
 # =====================================================
-# [수정] 성과 포지셔닝(레이더차트)에 회차 필터 연동 (백분위 재계산 로직 추가)
 
 # ===== 10.0. 포맷팅 헬퍼 (페이지 4 전용) =====
 def _fmt_kor_large(v):
@@ -2228,7 +2489,6 @@ def _fmt_kor_large(v):
         return f"{int(val)}"
 
 # ===== 10.1. [페이지 4] KPI 백분위 계산 (캐싱) =====
-# [수정] max_ep 파라미터 추가 -> 필터 적용된 데이터로 전체 IP 백분위 재산출
 @st.cache_data(ttl=600)
 def get_kpi_data_for_all_ips(df_all: pd.DataFrame, max_ep: float = None) -> pd.DataFrame:
     """
@@ -2237,7 +2497,7 @@ def get_kpi_data_for_all_ips(df_all: pd.DataFrame, max_ep: float = None) -> pd.D
     """
     df = df_all.copy()
     
-    # 1. 회차 필터링 (전체 유니버스 축소)
+    # 1. 회차 필터링
     if "회차_numeric" not in df.columns:
         df["회차_numeric"] = df["회차"].str.extract(r"(\d+)", expand=False).astype(float)
     
@@ -2277,8 +2537,7 @@ def get_kpi_data_for_all_ips(df_all: pd.DataFrame, max_ep: float = None) -> pd.D
     else:
         kpi_live = pd.Series(dtype=float, name="TVING LIVE")
 
-    # 디지털 조회수 / 언급량 (총합)
-    # 주의: _get_view_data는 global scope 함수이므로 df를 넘김
+    # 디지털 조회수 / 언급량
     view_sub = _get_view_data(df) 
     if not view_sub.empty:
         kpi_view = view_sub.groupby("IP")["value"].sum().rename("디지털 조회수")
@@ -2301,26 +2560,19 @@ def get_kpi_data_for_all_ips(df_all: pd.DataFrame, max_ep: float = None) -> pd.D
 
 # ===== 10.2. [페이지 4] 단일 IP/그룹 KPI 계산 =====
 def get_agg_kpis_for_ip_page4(df_ip: pd.DataFrame) -> Dict[str, float | None]:
-    """
-    단일 IP 또는 IP 그룹에 대한 주요 KPI 절대값 계산
-    """
     kpis = {}
     kpis["T시청률"] = mean_of_ip_episode_mean(df_ip, "T시청률")
     kpis["H시청률"] = mean_of_ip_episode_mean(df_ip, "H시청률")
-    
     kpis["TVING VOD"] = mean_of_ip_episode_sum(df_ip, "시청인구", ["TVING VOD", "TVING QUICK"])
     kpis["TVING LIVE"] = mean_of_ip_episode_sum(df_ip, "시청인구", ["TVING LIVE"])
-    
     kpis["디지털 조회수"] = mean_of_ip_sums(df_ip, "조회수")
     kpis["디지털 언급량"] = mean_of_ip_sums(df_ip, "언급량")
     kpis["화제성 점수"] = mean_of_ip_episode_mean(df_ip, "F_Score")
-
     return kpis
 
 
 # ===== 10.3. [페이지 4] KPI 카드 렌더링 (상단) =====
 def _render_kpi_row_ip_vs_group(kpis_ip, kpis_group, ranks, group_name):
-    
     def _calc_delta(ip_val, group_val): 
         ip_val = ip_val or 0
         group_val = group_val or 0
@@ -2346,9 +2598,7 @@ def _render_kpi_row_ip_vs_group(kpis_ip, kpis_group, ranks, group_name):
         <div class="kpi-card" style="padding: 14px 10px;">
             <div class="kpi-title">{title}</div>
             <div class="kpi-value" style="font-size: 22px; margin-bottom: 4px;">{val_str}</div>
-            <div style="line-height: 1.2;">
-                {delta_html}{rank_html}
-            </div>
+            <div style="line-height: 1.2;">{delta_html}{rank_html}</div>
         </div>
         """
 
@@ -2409,14 +2659,7 @@ def _render_kpi_row_ip_vs_ip(kpis1, kpis2, ip1, ip2):
 
 
 # ===== 10.4. [페이지 4] 통합 그래프 섹션 =====
-def _render_unified_charts(
-    df_target: pd.DataFrame, 
-    df_comp: pd.DataFrame, 
-    target_name: str, 
-    comp_name: str,
-    kpi_percentiles: pd.DataFrame,
-    comp_color: str = "#aaaaaa"
-):
+def _render_unified_charts(df_target, df_comp, target_name, comp_name, kpi_percentiles, comp_color="#aaaaaa"):
     st.divider()
 
     # --- 2. 성과 포지셔닝 (Radar) & 시청률 비교 (Line) ---
@@ -2518,10 +2761,8 @@ def _render_unified_charts(
         sub["연령"] = sub["데모"].apply(_to_decade_label)
         sub = sub[sub["성별"].isin(["남","여"]) & (sub["연령"]!="기타")]
         sub["label"] = sub.apply(lambda r: f"{r['연령']}{'남성' if r['성별']=='남' else '여성'}", axis=1)
-        
         if "회차_numeric" not in sub.columns:
              sub["회차_numeric"] = sub["회차"].str.extract(r"(\d+)", expand=False).astype(float)
-        
         agg = sub.groupby(["IP","회차_numeric","label"])["value"].sum().reset_index()
         return agg.groupby("label")["value"].mean()
 
@@ -2540,9 +2781,11 @@ def _render_unified_charts(
             fig_tv = px.bar(df_melt, x="label", y="인구수", color="구분", barmode="group",
                             color_discrete_map={target_name: "#d93636", comp_name: comp_color},
                             text="인구수")
-            fig_tv.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-            fig_tv.update_layout(height=300, margin=dict(t=30), legend=dict(title=None, orientation="h", y=1.02),
-                                 xaxis_title=None, yaxis_title=None)
+            fig_tv.update_traces(texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False)
+            max_val = float(df_melt["인구수"].max()) if len(df_melt) else 0.0
+            fig_tv.update_layout(height=320, margin=dict(t=60, b=20), legend=dict(title=None, orientation="h", y=1.02),
+                                 xaxis_title=None, yaxis_title=None,
+                                 yaxis=dict(range=[0, max_val * 1.2 if max_val > 0 else 1]))
             st.plotly_chart(fig_tv, use_container_width=True)
         else:
             st.info("데이터 없음")
@@ -2563,9 +2806,11 @@ def _render_unified_charts(
             fig_tv = px.bar(df_melt, x="label", y="인구수", color="구분", barmode="group",
                             color_discrete_map={target_name: "#d93636", comp_name: comp_color},
                             text="인구수")
-            fig_tv.update_traces(texttemplate='%{text:,.0f}', textposition='outside')
-            fig_tv.update_layout(height=300, margin=dict(t=30), legend=dict(title=None, orientation="h", y=1.02),
-                                 xaxis_title=None, yaxis_title=None)
+            fig_tv.update_traces(texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False)
+            max_val = float(df_melt["인구수"].max()) if len(df_melt) else 0.0
+            fig_tv.update_layout(height=320, margin=dict(t=60, b=20), legend=dict(title=None, orientation="h", y=1.02),
+                                 xaxis_title=None, yaxis_title=None,
+                                 yaxis=dict(range=[0, max_val * 1.2 if max_val > 0 else 1]))
             st.plotly_chart(fig_tv, use_container_width=True)
         else:
             st.info("데이터 없음")
@@ -2578,32 +2823,26 @@ def _render_unified_charts(
 
     def _get_pie_data(df_src, metric):
         if metric == "조회수":
-            sub = _get_view_data(df_src) # [3. 공통 함수]
+            sub = _get_view_data(df_src)
         else:
             sub = df_src[df_src["metric"] == metric].copy()
         
         if sub.empty: return pd.DataFrame(columns=["매체", "val"])
-        
         per_ip_media = sub.groupby(["IP", "매체"])["value"].sum().reset_index()
         avg_per_media = per_ip_media.groupby("매체")["value"].mean().reset_index().rename(columns={"value":"val"})
-        
         return avg_per_media
 
     def _draw_scaled_donuts_fixed_color(df_t, df_c, title, t_name, c_name):
         from plotly.subplots import make_subplots
-        
         all_media = set(df_t["매체"].unique()) | set(df_c["매체"].unique())
         sorted_media = sorted(list(all_media))
-        
         base_colors = ['#5c6bc0', '#7e57c2', '#26a69a', '#66bb6a', '#ffa726', '#ef5350', '#8d6e63', '#78909c']
         color_map = {m: base_colors[i % len(base_colors)] for i, m in enumerate(sorted_media)}
-        
         df_t["color"] = df_t["매체"].map(color_map)
         df_c["color"] = df_c["매체"].map(color_map)
 
         fig = make_subplots(rows=1, cols=2, specs=[[{'type':'domain'}, {'type':'domain'}]],
                             subplot_titles=[f"{t_name}", f"{c_name}"])
-        
         sum_t = df_t["val"].sum() if not df_t.empty else 0
         sum_c = df_c["val"].sum() if not df_c.empty else 0
         
@@ -2612,21 +2851,15 @@ def _render_unified_charts(
                 labels=df_t["매체"], values=df_t["val"], 
                 name=t_name, scalegroup='one', hole=0.4,
                 title=f"Total<br>{_fmt_kor_large(sum_t)}", title_font=dict(size=14),
-                marker=dict(colors=df_t["color"]), 
-                domain=dict(column=0),
-                sort=False 
+                marker=dict(colors=df_t["color"]), domain=dict(column=0), sort=False 
             ), 1, 1)
-        
         if not df_c.empty:
             fig.add_trace(go.Pie(
                 labels=df_c["매체"], values=df_c["val"], 
                 name=c_name, scalegroup='one', hole=0.4,
                 title=f"Total<br>{_fmt_kor_large(sum_c)}", title_font=dict(size=14),
-                marker=dict(colors=df_c["color"]), 
-                domain=dict(column=1),
-                sort=False
+                marker=dict(colors=df_c["color"]), domain=dict(column=1), sort=False
             ), 1, 2)
-        
         fig.update_layout(height=320, margin=dict(t=30, b=10, l=10, r=10),
                           legend=dict(orientation="h", y=-0.15, x=0.5, xanchor="center"))
         return fig
@@ -2635,9 +2868,7 @@ def _render_unified_charts(
         st.markdown("###### 👀 디지털 조회수 비교")
         pie_t = _get_pie_data(df_target, "조회수")
         pie_c = _get_pie_data(df_comp,   "조회수")
-        
-        if pie_t.empty and pie_c.empty:
-            st.info("데이터 없음")
+        if pie_t.empty and pie_c.empty: st.info("데이터 없음")
         else:
             fig_pie = _draw_scaled_donuts_fixed_color(pie_t, pie_c, "조회수", target_name, comp_name)
             st.plotly_chart(fig_pie, use_container_width=True)
@@ -2646,9 +2877,7 @@ def _render_unified_charts(
         st.markdown("###### 💬 디지털 언급량 비교")
         pie_t = _get_pie_data(df_target, "언급량")
         pie_c = _get_pie_data(df_comp,   "언급량")
-        
-        if pie_t.empty and pie_c.empty:
-            st.info("데이터 없음")
+        if pie_t.empty and pie_c.empty: st.info("데이터 없음")
         else:
             fig_pie = _draw_scaled_donuts_fixed_color(pie_t, pie_c, "언급량", target_name, comp_name)
             st.plotly_chart(fig_pie, use_container_width=True)
@@ -2685,13 +2914,10 @@ def _render_unified_charts(
         for col in DEMO_COLS_ORDER: 
             base_col = col + '_base'
             comp_col = col + '_comp'
-
             df_merged[base_col] = pd.to_numeric(df_merged.get(base_col), errors='coerce').fillna(0.0)
             df_merged[comp_col] = pd.to_numeric(df_merged.get(comp_col), errors='coerce').fillna(0.0)
-
             base_values = df_merged[base_col].values
             comp_values = df_merged[comp_col].values
-
             index_values = np.where(
                 comp_values != 0,
                 ((base_values - comp_values) / comp_values) * 100,
@@ -2700,36 +2926,39 @@ def _render_unified_charts(
             df_index[col] = index_values
 
         table_title = f"{media_label} 연령대별 시청자수 차이 ({target_name} vs {comp_name})"
-        render_heatmap(df_index, table_title) # [6. 공통 함수]
+        render_heatmap(df_index, table_title)
 
 
 # ===== 10.5. [페이지 4] 메인 렌더링 함수 =====
+#endregion
+#region [ 6-3. 성과 비교분석 ]
 def render_comparison():
-    df_all = load_data() # [3. 공통 함수]
-    df_all = _exclude_future_ips(df_all)
-
-    
+    df_all = load_data() 
     if "회차_numeric" not in df_all.columns:
         df_all["회차_numeric"] = df_all["회차"].str.extract(r"(\d+)", expand=False).astype(float)
 
-    # [핵심] 백분위 계산시에는 아직 필터값이 없으므로 일단 전체 로드 후, 아래에서 재계산 호출
-    # (초기값은 전체로 둠)
     kpi_percentiles = get_kpi_data_for_all_ips(df_all, max_ep=None)
-
     ip_options = sorted(df_all["IP"].dropna().unique().tolist())
-    selected_ip1 = None
+    
+    # 전역 IP 가져오기 (기준 IP)
+    global_ip = st.session_state.get("global_ip")
+    if not global_ip: st.error("IP 선택 필요"); return
+    
+    selected_ip1 = global_ip
     selected_ip2 = None
 
     current_mode = st.session_state.get("comp_mode_page4", "IP vs 그룹 평균")
     
     if current_mode == "IP vs IP":
-        filter_cols = st.columns([3, 2, 2, 2, 3])
+        # 타이틀(4) | 모드선택(3) | 비교IP(3) | 회차(2)
+        filter_cols = st.columns([4, 3, 3, 2])
     else:
-        filter_cols = st.columns([3, 2, 2, 2, 2, 1]) 
+        # 타이틀(4) | 모드선택(3) | 편성(2) | 연도(2) | 회차(1)
+        filter_cols = st.columns([4, 3, 2, 2, 1])
     
-    # --- 헤더 및 모드 선택 ---
     with filter_cols[0]:
-        st.markdown("## ⚖️ 성과 비교분석")
+        st.markdown(f"<div class='page-title'>⚖️ {selected_ip1} <span style='font-size:18px;color:#666'>vs ...</span></div>", unsafe_allow_html=True)
+        
     with st.expander("ℹ️ 지표 기준 안내", expanded=False):
         st.markdown("<div class='gd-guideline'>", unsafe_allow_html=True)
         st.markdown(textwrap.dedent("""
@@ -2757,77 +2986,60 @@ def render_comparison():
     # --- IP vs IP 모드 ---
     if comparison_mode == "IP vs IP":
         with filter_cols[2]:
-            selected_ip1 = st.selectbox(
-                "기준 IP", ip_options, index=0 if ip_options else None, 
-                label_visibility="collapsed"
-            )
-        with filter_cols[3]:
             ip_options_2 = [ip for ip in ip_options if ip != selected_ip1]
             selected_ip2 = st.selectbox(
                 "비교 IP", ip_options_2, 
-                index=1 if len(ip_options_2) > 1 else (0 if len(ip_options_2) > 0 else None), 
+                index=0 if ip_options_2 else None, 
                 label_visibility="collapsed"
             )
         
-        target_rows = df_all[df_all["IP"] == selected_ip1] if selected_ip1 else pd.DataFrame()
+        target_rows = df_all[df_all["IP"] == selected_ip1]
         ep_opts = ["전체"] + get_episode_options(target_rows)
         
-        with filter_cols[4]:
-            selected_max_ep = st.selectbox(
-                "회차 범위 (누적)", ep_opts, index=0,
-                label_visibility="collapsed"
-            )
+        with filter_cols[3]:
+            selected_max_ep = st.selectbox("회차 범위", ep_opts, index=0, label_visibility="collapsed")
         
-        use_same_prog = False
-        selected_years = []
+        use_same_prog = False; selected_years = []
 
     # --- IP vs 그룹 평균 모드 ---
     else: 
-        base_ip_info_rows = df_all[df_all["IP"] == selected_ip1];
+        # 기준 IP 정보 자동 로드
+        base_ip_info_rows = df_all[df_all["IP"] == selected_ip1]
+        base_ip_prog = base_ip_info_rows["편성"].dropna().mode().iloc[0] if (("편성" in base_ip_info_rows.columns) and (not base_ip_info_rows["편성"].dropna().empty)) else None
         
-        # [수정] '편성연도' 컬럼 사용
         all_years = []
         if "편성연도" in df_all.columns:
             unique_vals = df_all["편성연도"].dropna().unique()
-            try:
-                all_years = sorted(unique_vals, reverse=True)
-            except:
-                all_years = sorted([str(x) for x in unique_vals], reverse=True)
+            try: all_years = sorted(unique_vals, reverse=True)
+            except: all_years = sorted([str(x) for x in unique_vals], reverse=True)
 
-        # Default selection
         default_year_list = []
         if "편성연도" in base_ip_info_rows.columns:
             y_mode = base_ip_info_rows["편성연도"].dropna().mode()
-            if not y_mode.empty:
-                default_year_list = [y_mode.iloc[0]]
+            if not y_mode.empty: default_year_list = [y_mode.iloc[0]]
 
         with filter_cols[2]:
-            selected_ip1 = st.selectbox(
-                "기준 IP", ip_options, index=0 if ip_options else None, 
+            comp_options = ["동일 편성", "전체", "월화", "수목", "토일", "평일"]
+            default_comp = "평일" if (base_ip_prog == "수목") else "동일 편성"
+            comp_type = st.selectbox(
+                "편성 기준",
+                comp_options,
+                index=comp_options.index(default_comp),
+                key="comp_prog_page4",
                 label_visibility="collapsed"
             )
-
-        with filter_cols[3]:
-            comp_type = st.selectbox(
-                "동일 편성 기준", ["동일 편성", "전체"], index=0,
-                key="comp_prog_page4", label_visibility="collapsed"
-            )
             use_same_prog = (comp_type == "동일 편성")
-
-        with filter_cols[4]:
+        with filter_cols[3]:
             selected_years = st.multiselect(
                 "방영 연도", all_years, default=default_year_list,
                 key="comp_year_page4", placeholder="연도 선택", label_visibility="collapsed"
             )
         
-        target_rows = df_all[df_all["IP"] == selected_ip1] if selected_ip1 else pd.DataFrame()
+        target_rows = df_all[df_all["IP"] == selected_ip1]
         ep_opts = ["전체"] + get_episode_options(target_rows)
 
-        with filter_cols[5]:
-            selected_max_ep = st.selectbox(
-                "회차 범위", ep_opts, index=0,
-                label_visibility="collapsed"
-            )
+        with filter_cols[4]:
+            selected_max_ep = st.selectbox("회차 범위", ep_opts, index=0, label_visibility="collapsed")
 
     st.divider()
 
@@ -2836,102 +3048,97 @@ def render_comparison():
         st.info("기준 IP를 선택해주세요.")
         return
 
-    # [핵심] 회차 필터 숫자 추출 및 백분위 재계산
+    # [추가] 전체 데이터 풀에서 본방이 시작된(T시청률 0초과) IP 목록 추출
+    aired_ips = get_aired_ips(df_all)
+
     ep_limit = None
     if selected_max_ep != "전체":
-        try:
-            ep_limit = float(re.findall(r'\d+', str(selected_max_ep))[0])
-        except:
-            ep_limit = None
+        try: ep_limit = float(re.findall(r'\d+', str(selected_max_ep))[0])
+        except: ep_limit = None
             
-    # 필터된 회차 기준으로 전체 IP 백분위 다시 가져오기
-    kpi_percentiles = get_kpi_data_for_all_ips(df_all, max_ep=ep_limit)
+    # [수정] 백분위(레이더 차트) 산출 시에도 방영작들만 모수로 사용
+    df_for_kpi = df_all[df_all["IP"].isin(aired_ips) | (df_all["IP"] == selected_ip1)].copy()
+    kpi_percentiles = get_kpi_data_for_all_ips(df_for_kpi, max_ep=ep_limit)
 
-    # 기준 IP 데이터 필터링
     df_target = df_all[df_all["IP"] == selected_ip1].copy()
     if ep_limit is not None:
         df_target = df_target[df_target["회차_numeric"] <= ep_limit]
     
     kpis_target = get_agg_kpis_for_ip_page4(df_target)
 
-    # 비교 그룹 데이터 준비
     if comparison_mode == "IP vs 그룹 평균":
         group_name_parts = []
-        df_comp = df_all.copy()
+        
+        # [수정] 비교 그룹 생성 시 방영작 풀만 사용
+        df_comp = df_all[df_all["IP"].isin(aired_ips)].copy()
         
         ip_prog = df_target["편성"].dropna().mode().iloc[0] if not df_target["편성"].dropna().empty else None
-        
-        if use_same_prog: 
-            if ip_prog:
-                df_comp = df_comp[df_comp["편성"] == ip_prog]
-                group_name_parts.append(f"'{ip_prog}'")
-            else: st.warning("편성 정보 없음 (제외)")
-        
-        if selected_years:
-            # [수정] 값 직접 비교
-            df_comp = df_comp[df_comp["편성연도"].isin(selected_years)]
 
+        # 편성 기준 필터(없으면 전체)
+        comp_prog_filter = None
+        if comp_type == "평일":
+            comp_prog_filter = ["월화", "수목"]
+        elif comp_type in ["월화", "수목", "토일"]:
+            comp_prog_filter = [comp_type]
+        elif comp_type == "동일 편성":
+            comp_prog_filter = [ip_prog] if ip_prog else None
+
+        if comp_prog_filter is not None:
+            if (comp_type == "동일 편성") and (not ip_prog):
+                st.warning("편성 정보 없음 (제외)")
+            else:
+                df_comp = df_comp[df_comp["편성"].isin(comp_prog_filter)]
+
+                if comp_type == "평일":
+                    group_name_parts.append("'평일(월화+수목)'")
+                elif comp_type in ["월화", "수목", "토일"]:
+                    group_name_parts.append(f"'{comp_type}'")
+                elif comp_type == "동일 편성" and ip_prog:
+                    group_name_parts.append(f"'{ip_prog}'")
+
+        if selected_years:
+            df_comp = df_comp[df_comp["편성연도"].isin(selected_years)]
             if len(selected_years) <= 3:
                 years_str = ",".join(map(str, sorted(selected_years)))
-                group_name_parts.append(f"{years_str}") # '년' 제거 (데이터에 포함됨)
+                group_name_parts.append(f"{years_str}")
             else:
-                try:
-                    group_name_parts.append(f"{min(selected_years)}~{max(selected_years)}")
-                except:
-                    group_name_parts.append("선택연도")
+                try: group_name_parts.append(f"{min(selected_years)}~{max(selected_years)}")
+                except: group_name_parts.append("선택연도")
         
         if not group_name_parts: group_name_parts.append("전체")
         comp_name = " & ".join(group_name_parts) + " 평균"
 
-        # 비교 그룹도 회차 필터 적용
         if ep_limit is not None:
              df_comp = df_comp[df_comp["회차_numeric"] <= ep_limit]
 
         kpis_comp = get_agg_kpis_for_ip_page4(df_comp)
         
-        # [추가] 그룹 내 순위 계산 로직
         ranks = {}
-        
         def _calc_rank_in_group(df_g, target_val, metric_key, higher_good=True):
-            # 1. 그룹 내 모든 IP별 KPI 계산
             if df_g.empty: return (None, 0)
-            
             if metric_key in ["T시청률", "H시청률", "화제성 점수"]:
                 agg = df_g[df_g["metric"] == (metric_key if metric_key != "화제성 점수" else "F_Score")]
                 if agg.empty: return (None, 0)
                 ep_agg = agg.groupby(["IP", "회차_numeric"])["value"].mean().reset_index()
                 ip_series = ep_agg.groupby("IP")["value"].mean()
-                
             elif metric_key in ["TVING VOD", "TVING LIVE"]:
                 media_target = ["TVING LIVE"] if metric_key == "TVING LIVE" else ["TVING VOD", "TVING QUICK"]
                 agg = df_g[(df_g["metric"] == "시청인구") & (df_g["매체"].isin(media_target))]
                 if agg.empty: return (None, 0)
                 ep_agg = agg.groupby(["IP", "회차_numeric"])["value"].sum().reset_index()
                 ip_series = ep_agg.groupby("IP")["value"].mean()
-                
             elif metric_key in ["디지털 조회수", "디지털 언급량"]:
-                if metric_key == "디지털 조회수":
-                    agg = _get_view_data(df_g)
-                else:
-                    agg = df_g[df_g["metric"] == "언급량"]
+                if metric_key == "디지털 조회수": agg = _get_view_data(df_g)
+                else: agg = df_g[df_g["metric"] == "언급량"]
                 if agg.empty: return (None, 0)
                 ip_series = agg.groupby("IP")["value"].sum()
-            else:
-                return (None, 0)
+            else: return (None, 0)
 
-            if target_val is not None:
-                ip_series[selected_ip1] = target_val
-            
+            if target_val is not None: ip_series[selected_ip1] = target_val
             if ip_series.empty: return (None, 0)
-            
             ranked = ip_series.rank(method='min', ascending=not higher_good)
-            
-            try:
-                my_rank = int(ranked[selected_ip1])
-                total_cnt = len(ip_series)
-                return (my_rank, total_cnt)
-            except:
-                return (None, len(ip_series))
+            try: return (int(ranked[selected_ip1]), len(ip_series))
+            except: return (None, len(ip_series))
 
         keys_map = {
             "T시청률": "T시청률", "H시청률": "H시청률", 
@@ -2939,7 +3146,6 @@ def render_comparison():
             "디지털 조회수": "디지털 조회수", "디지털 언급량": "디지털 언급량",
             "화제성 점수": "화제성 점수"
         }
-        
         for k in keys_map:
             val = kpis_target.get(k)
             ranks[k] = _calc_rank_in_group(df_comp, val, k)
@@ -2948,55 +3154,150 @@ def render_comparison():
         _render_unified_charts(df_target, df_comp, selected_ip1, comp_name, kpi_percentiles, comp_color="#aaaaaa")
 
     else: # IP vs IP
-        if not selected_ip2:
-            st.warning("비교할 IP를 선택해주세요.")
-            return
-            
+        if not selected_ip2: st.warning("비교할 IP를 선택해주세요."); return
         df_comp = df_all[df_all["IP"] == selected_ip2].copy()
-
-        if ep_limit is not None:
-             df_comp = df_comp[df_comp["회차_numeric"] <= ep_limit]
-
+        if ep_limit is not None: df_comp = df_comp[df_comp["회차_numeric"] <= ep_limit]
         kpis_comp = get_agg_kpis_for_ip_page4(df_comp)
         comp_name = selected_ip2
-        
         _render_kpi_row_ip_vs_ip(kpis_target, kpis_comp, selected_ip1, selected_ip2)
         _render_unified_charts(df_target, df_comp, selected_ip1, comp_name, kpi_percentiles, comp_color="#aaaaaa")
-#endregion
 
-#region [ 10. 페이지 4: 성장스코어-방영성과 ]
+
 # =====================================================
-# [수정] 2025-11-19: 비교 그룹(동일 편성) 필터 추가 및 레이아웃 조정
+
+# ---------- [공통] 설정 상수 ----------
+EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
+ROW_LABELS = ["S","A","B","C","D"]
+COL_LABELS = ["+2","+1","0","-1","-2"]
+ABS_SCORE  = {"S":5,"A":4,"B":3,"C":2,"D":1}
+SLO_SCORE  = {"+2":5,"+1":4,"0":3,"-1":2,"-2":1}
+SLOPE_LABELS = ["+2", "+1", "0", "-1", "-2"]
+ABS_NUM = {"S":5, "A":4, "B":3, "C":2, "D":1}
+NETFLIX_VOD_FACTOR = 1.4
+
+# 방영지표용 정의
+METRICS_DEF_BROADCAST = [
+    ("가구시청률", "H시청률", None),
+    ("타깃시청률", "T시청률", None),
+    ("TVING LIVE", "시청인구", "LIVE"),
+    ("TVING VOD",  "시청인구", "VOD"),
+]
+
+# 디지털용 정의 (Display, Metric, AggFunc, UseSlope)
+METRICS_DEF_DIGITAL = [
+    ("조회수", "조회수", "sum", True),
+    ("화제성", "F_Score", "mean", True),
+]
+
+# ---------- [방영지표] 캐싱된 계산 함수 ----------
+@st.cache_data(show_spinner=False)
+def _calc_growth_grades_cached(df_filtered: pd.DataFrame, target_ips: List[str], cutoffs: List[int], ep_cutoff_target: int):
+    # 1. 데이터 준비 (Numpy 변환용 캐시)
+    ip_metric_cache = {}
+    
+    def _get_full_series(sub_df, metric, media):
+        sub = sub_df[sub_df["metric"] == metric].copy()
+        if media == "LIVE":
+            sub = sub[sub["매체"] == "TVING LIVE"]
+        elif media == "VOD":
+            sub = sub[sub["매체"] == "TVING VOD"]
+            if "넷플릭스편성작" in sub.columns:
+                is_netflix = (sub["넷플릭스편성작"] == 1)
+                if is_netflix.any():
+                    sub.loc[is_netflix, "value"] *= NETFLIX_VOD_FACTOR
+        sub = sub.dropna(subset=["value", "회차_numeric"])
+        if sub.empty: return None
+        if metric in ["H시청률", "T시청률"]:
+            s = sub.groupby("회차_numeric")["value"].mean().reset_index()
+        else:
+            s = sub.groupby("회차_numeric")["value"].sum().reset_index()
+        s = s.sort_values("회차_numeric")
+        return s["회차_numeric"].values.astype(float), s["value"].values.astype(float)
+
+    for ip in target_ips:
+        ip_metric_cache[ip] = {}
+        ip_df = df_filtered[df_filtered["IP"] == ip]
+        for disp, metric, media in METRICS_DEF_BROADCAST:
+            ip_metric_cache[ip][disp] = _get_full_series(ip_df, metric, media)
+
+    # 2. 통계 계산
+    def _calc_stats(xy_tuple, n_limit):
+        if xy_tuple is None: return np.nan, np.nan
+        x, y = xy_tuple
+        mask = x <= float(n_limit)
+        x_sub, y_sub = x[mask], y[mask]
+        if len(x_sub) == 0: return np.nan, np.nan
+        abs_val = np.mean(y_sub)
+        slope = np.polyfit(x_sub, y_sub, 1)[0] if len(x_sub) >= 2 else np.nan
+        return abs_val, slope
+
+    # 3. 등급 산정 헬퍼
+    def _quintile_grade(series, labels):
+        s = pd.Series(series).astype(float)
+        valid = s.dropna()
+        if valid.empty: return pd.Series(index=s.index, data=np.nan)
+        ranks = valid.rank(method="average", ascending=False, pct=True)
+        bins = [0, .2, .4, .6, .8, 1.0000001]
+        idx = np.digitize(ranks.values, bins, right=True) - 1
+        idx = np.clip(idx, 0, 4)
+        return pd.Series([labels[i] for i in idx], index=valid.index).reindex(s.index)
+
+    def _to_percentile(s):
+        return pd.Series(s).astype(float).rank(pct=True) * 100
+
+    evo_rows = []
+    base_df = pd.DataFrame()
+
+    for n in cutoffs:
+        tmp_rows = []
+        for ip in target_ips:
+            row = {"IP": ip}
+            for disp, _, _ in METRICS_DEF_BROADCAST:
+                xy = ip_metric_cache[ip][disp]
+                a, s = _calc_stats(xy, n)
+                row[f"{disp}_절대"] = a
+                row[f"{disp}_기울기"] = s
+            tmp_rows.append(row)
+        
+        tmp_df = pd.DataFrame(tmp_rows)
+        if tmp_df.empty: continue
+
+        for disp, _, _ in METRICS_DEF_BROADCAST:
+            tmp_df[f"{disp}_절대등급"] = _quintile_grade(tmp_df[f"{disp}_절대"], ["S","A","B","C","D"])
+            tmp_df[f"{disp}_상승등급"] = _quintile_grade(tmp_df[f"{disp}_기울기"], SLOPE_LABELS)
+            tmp_df[f"{disp}_종합"] = tmp_df[f"{disp}_절대등급"].astype(str) + tmp_df[f"{disp}_상승등급"].astype(str).replace("nan", "")
+        
+        tmp_df["_ABS_PCT_MEAN"] = pd.concat([_to_percentile(tmp_df[f"{d}_절대"]) for d,_,_ in METRICS_DEF_BROADCAST], axis=1).mean(axis=1)
+        tmp_df["_SLOPE_PCT_MEAN"] = pd.concat([_to_percentile(tmp_df[f"{d}_기울기"]) for d,_,_ in METRICS_DEF_BROADCAST], axis=1).mean(axis=1)
+        tmp_df["종합_절대등급"] = _quintile_grade(tmp_df["_ABS_PCT_MEAN"], ["S","A","B","C","D"])
+        tmp_df["종합_상승등급"] = _quintile_grade(tmp_df["_SLOPE_PCT_MEAN"], SLOPE_LABELS)
+        tmp_df["종합등급"] = tmp_df["종합_절대등급"].astype(str) + tmp_df["종합_상승등급"].astype(str).replace("nan", "")
+
+        if n == ep_cutoff_target:
+            base_df = tmp_df.copy()
+
+        for idx, r in tmp_df.iterrows():
+            ag = str(r["종합_절대등급"]) if pd.notna(r["종합_절대등급"]) else None
+            if ag:
+                sg = str(r["종합_상승등급"]) if pd.notna(r["종합_상승등급"]) else ""
+                evo_rows.append({
+                    "IP": r["IP"], "N": n, "회차라벨": f"{n}회차",
+                    "ABS_GRADE": ag, "SLOPE_GRADE": sg, "ABS_NUM": ABS_NUM.get(ag, np.nan)
+                })
+
+    return base_df, pd.DataFrame(evo_rows)
+
+
+# ---------- [메인] 통합 렌더링 함수 ----------
+#endregion
+#region [ 6-4. 성장스코어 ]
 def render_growth_score():
-    """
-    [페이지 6] 성장스코어-방영지표 렌더링 함수
-    """
-    df_all = load_data().copy() # [3. 공통 함수]
-    df_all = _exclude_future_ips(df_all)
-
-
-    # ---------- 설정 ----------
-    EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
-    ROW_LABELS = ["S","A","B","C","D"]
-    COL_LABELS = ["+2","+1","0","-1","-2"]
-    ABS_SCORE  = {"S":5,"A":4,"B":3,"C":2,"D":1}
-    SLO_SCORE  = {"+2":5,"+1":4,"0":3,"-1":2,"-2":1}
-    SLOPE_LABELS = ["+2", "+1", "0", "-1", "-2"]
-    NETFLIX_VOD_FACTOR = 1.4
-    ABS_NUM = {"S":5, "A":4, "B":3, "C":2, "D":1} # 회차별 추이용
-
-    METRICS = [
-        ("가구시청률", "H시청률", None),
-        ("타깃시청률", "T시청률", None),
-        ("TVING LIVE", "시청인구", "LIVE"),
-        ("TVING VOD",  "시청인구", "VOD"),
-    ]
-
-    # 전체 IP 리스트 (선택 박스용)
+    df_all = load_data().copy()
     all_ip_list = sorted(df_all["IP"].dropna().unique().tolist())
     if not all_ip_list:
         st.warning("IP 데이터가 없습니다."); return
 
+    # 스타일 주입
     st.markdown("""
     <style>
       div[data-testid="stVerticalBlockBorderWrapper"]:has(.growth-kpi) .kpi-card {
@@ -3008,880 +3309,1559 @@ def render_growth_score():
     </style>
     """, unsafe_allow_html=True)
 
-    # ---------- 헤더(타이틀/선택/필터) ----------
-    _ep_display = st.session_state.get("growth_ep_cutoff", 4)
+    # 전역 IP 사용
+    selected_ip = st.session_state.get("global_ip")
+    if not selected_ip or selected_ip not in all_ip_list:
+        st.error("IP 선택 필요"); return
 
-    # [수정] 필터 추가를 위해 컬럼 비율 조정 (3개 -> 4개)
-    head = st.columns([4, 2, 2, 2])
+    # 데이터 전처리 (회차 숫자형)
+    if "회차_numeric" not in df_all.columns:
+        df_all["회차_numeric"] = df_all["회차"].astype(str).str.extract(r"(\d+)", expand=False).astype(float)
+
+    # --- 헤더 & 토글 레이아웃 ---
+    # 현재 뷰 모드 가져오기 (Radio가 렌더링되기 전에 기본값 설정 필요시 사용, 여기선 Radio가 State를 제어)
+    current_view = st.session_state.get("growth_view_mode", "방영지표")
     
+    # 레이아웃 분기 (방영지표는 비교그룹 필터가 더 있음)
+    if current_view == "방영지표":
+        head = st.columns([5, 3, 3, 2]) # Title, Toggle, CompGroup, EpCutoff
+    else:
+        head = st.columns([5, 3, 3])    # Title, Toggle, EpCutoff
+
+    # [Col 1] 타이틀
+    _ep_display = st.session_state.get("growth_ep_cutoff", 4)
     with head[0]:
         st.markdown(
-            f"## 🚀 성장스코어-방영지표 <span style='font-size:20px;color:#6b7b93'>(~{_ep_display}회 기준)</span>",
+            f"<div class='page-title'>🚀 {selected_ip} 성장스코어 <span style='font-size:20px;color:#6b7b93'>(~{_ep_display}회)</span></div>",
             unsafe_allow_html=True
         )
-    
+
+    # [Col 2] 뷰 모드 토글
     with head[1]:
-        selected_ip = st.selectbox(
-            "IP 선택", all_ip_list, index=0,
-            key="growth_ip_select", label_visibility="collapsed"
+        view_mode = st.radio(
+            "지표 선택", ["방영지표", "디지털"], 
+            index=0, horizontal=True, 
+            key="growth_view_mode", label_visibility="collapsed"
         )
 
-    # [수정] 비교 그룹 필터 추가
-    with head[2]:
-        comp_group_mode = st.selectbox(
-            "비교 그룹", 
-            ["전체 비교", "동일 편성만"], 
-            index=0,
-            key="growth_comp_mode", 
-            label_visibility="collapsed"
-        )
-
-    with head[3]:
-        ep_cutoff = st.selectbox(
-            "회차 기준", EP_CHOICES, index=1,
-            key="growth_ep_cutoff", label_visibility="collapsed"
-        )
-
+    # [공통] 안내 문구
     with st.expander("ℹ️ 지표 기준 안내", expanded=False):
-        st.markdown("""
-    **등급 체계**
-    - **절대값 등급**: 각 항목별(시청률,티빙UV) 수치를 비교군 내 순위화→ `S / A / B / C / D`
-    - **상승률 등급**: 각 항목별(시청률,티빙UV)의 회차별 증감정도를 비교군 내 순위화 → `+2 / +1 / 0 / -1 / -2`
-    - **종합등급**: 절대값과 상승률 등급을 결합해 표기 (예: `A+2`).
-
-    **보정기준**
-    - 넷플릭스 편성작품은 넷플릭스 비 편성작 대비 평균적으로 약 40%정도의 TVING VOD수치의 손실이 있으며, 그에 따라 등급산출시 40%보정
+        if view_mode == "방영지표":
+            st.markdown("""
+            **등급 체계**
+            - **절대값 등급**: 항목별 수치 순위 → `S / A / B / C / D`
+            - **상승률 등급**: 항목별 회차별 증감정도 순위 → `+2 / +1 / 0 / -1 / -2`
+            - **종합등급**: 절대값 + 상승률 (예: `A+2`).
+            **보정기준**
+            - 넷플릭스 편성작품은 TVING VOD 수치를 약 40% 보정
+            """)
+        else:
+            st.markdown("""
+            **등급 체계**
+            - **절대값 등급**: 각 항목별(디지털조회, 화제성점수) 수치를 비교군 내 순위화→ `S / A / B / C / D`
+            - **상승률 등급**: 각 항목별의 주차별 증감정도를 비교군 내 순위화 → `+2 / +1 / 0 / -1 / -2`
+            - **종합등급**: 절대값과 상승률 등급을 결합해 표기 (예: A+2).  
             """)
 
-    # ---------- [로직 추가] IP 필터링 (비교군 설정) ----------
-    ips = all_ip_list[:] # 기본은 전체
-    
-    if comp_group_mode == "동일 편성만":
-        # 선택된 IP의 편성 정보 조회
-        target_info = df_all[df_all["IP"] == selected_ip]
-        if not target_info.empty:
-            target_prog = target_info["편성"].dropna().mode()
-            if not target_prog.empty:
-                prog_val = target_prog.iloc[0]
-                # 동일 편성 IP만 필터링
-                ips = sorted(df_all[df_all["편성"] == prog_val]["IP"].unique().tolist())
-                
-                # 만약 데이터 오류로 본인이 빠졌다면 강제 추가
-                if selected_ip not in ips:
-                    ips.append(selected_ip)
-                    
-                st.markdown(
-                    f"#### {selected_ip} <span style='font-size:16px;color:#6b7b93'>자세히보기 (비교군: {prog_val} / 총 {len(ips)}작품)</span>",
-                    unsafe_allow_html=True
-                )
+    # =========================================================
+    # [CASE 1] 방영지표 로직
+    # =========================================================
+    if view_mode == "방영지표":
+        # [Col 3, 4] 추가 필터
+        with head[2]:
+            comp_group_mode = st.selectbox("비교 그룹", ["전체 비교", "동일 편성만"], index=0, key="growth_comp_mode", label_visibility="collapsed")
+        with head[3]:
+            ep_cutoff = st.selectbox("회차 기준", EP_CHOICES, index=1, key="growth_ep_cutoff", label_visibility="collapsed")
+
+        # IP 필터링
+        ips = all_ip_list[:]
+        if comp_group_mode == "동일 편성만":
+            target_info = df_all[df_all["IP"] == selected_ip]
+            if not target_info.empty:
+                target_prog = target_info["편성"].dropna().mode()
+                if not target_prog.empty:
+                    prog_val = target_prog.iloc[0]
+                    ips = sorted(df_all[df_all["편성"] == prog_val]["IP"].unique().tolist())
+                    if selected_ip not in ips: ips.append(selected_ip)
+                    st.markdown(f"#### {selected_ip} <span style='font-size:16px;color:#6b7b93'>자세히보기 (비교군: {prog_val} / 총 {len(ips)}작품)</span>", unsafe_allow_html=True)
+                else:
+                    st.warning(f"'{selected_ip}'의 편성 정보가 없어 전체 IP와 비교합니다.")
             else:
-                st.warning(f"'{selected_ip}'의 편성 정보가 없어 전체 IP와 비교합니다.")
-                st.markdown(f"#### {selected_ip} <span style='font-size:16px;color:#6b7b93'>자세히보기 (전체 비교)</span>", unsafe_allow_html=True)
+                st.markdown(f"#### {selected_ip} <span style='font-size:16px;color:#6b7b93'>자세히보기</span>", unsafe_allow_html=True)
         else:
-            st.markdown(f"#### {selected_ip} <span style='font-size:16px;color:#6b7b93'>자세히보기</span>", unsafe_allow_html=True)
+            st.markdown(f"#### {selected_ip} <span style='font-size:16px;color:#6b7b93'>자세히보기 (전체 비교 / 총 {len(ips)}작품)</span>", unsafe_allow_html=True)
+
+        # 데이터 준비 및 계산 (Loop 최적화)
+        sel_ip_row = df_all[df_all["IP"] == selected_ip]
+        _max_ep_val = pd.to_numeric(sel_ip_row["회차_numeric"], errors="coerce").max() if not sel_ip_row.empty else 0
+        
+        if pd.isna(_max_ep_val) or _max_ep_val == 0: _Ns = [min(EP_CHOICES)]
+        else: _Ns = [n for n in EP_CHOICES if n <= _max_ep_val]
+        
+        needed_cutoffs = sorted(list(set(_Ns) | {ep_cutoff}))
+        df_filtered = df_all[df_all["IP"].isin(ips)].copy()
+
+        # [핵심] 계산 실행
+        base, evo_all = _calc_growth_grades_cached(df_filtered, ips, needed_cutoffs, ep_cutoff)
+
+        if base.empty: st.error("데이터 계산 실패"); return
+        try:
+            focus = base[base["IP"] == selected_ip].iloc[0]
+        except IndexError: st.error("데이터 계산 오류"); return
+
+        # [UI] 요약 카드
+        st.markdown("<div class='growth-kpi'>", unsafe_allow_html=True)
+        card_cols = st.columns([2, 1, 1, 1, 1])
+        with card_cols[0]:
+            st.markdown(f"""
+                <div class="kpi-card" style="height:110px;border:2px solid #004a99;background:linear-gradient(180deg,#e8f0ff, #ffffff);">
+                  <div class="kpi-title" style="font-size:15px;color:#003d80;">종합등급</div>
+                  <div class="kpi-value" style="font-size:40px;color:#003d80;">{focus['종합등급'] if pd.notna(focus['종합등급']) else '–'}</div>
+                </div>""", unsafe_allow_html=True)
+        
+        def _grade_card(col, title, val):
+            with col:
+                st.markdown(f"""<div class="kpi-card" style="height:110px;"><div class="kpi-title">{title}</div><div class="kpi-value" style="font-size:28px;">{val if pd.notna(val) else '–'}</div></div>""", unsafe_allow_html=True)
+        
+        _grade_card(card_cols[1], "가구시청률 등급", focus["가구시청률_종합"])
+        _grade_card(card_cols[2], "타깃시청률 등급", focus["타깃시청률_종합"])
+        _grade_card(card_cols[3], "TVING LIVE 등급", focus["TVING LIVE_종합"])
+        _grade_card(card_cols[4], "TVING VOD 등급",  focus["TVING VOD_종합"])
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+        # [UI] 등급 추이 그래프
+        evo_ip = evo_all[evo_all["IP"] == selected_ip].copy() if not evo_all.empty else pd.DataFrame()
+        if not evo_ip.empty:
+            fig_e = go.Figure()
+            fig_e.add_vrect(x0=ep_cutoff - 0.5, x1=ep_cutoff + 0.5, fillcolor="rgba(0,90,200,0.12)", line_width=0)
+            fig_e.add_trace(go.Scatter(x=evo_ip["N"], y=evo_ip["ABS_NUM"], mode="lines+markers", line=dict(shape="spline", width=3), marker=dict(size=8), name=selected_ip, hoverinfo="skip"))
+            for xi, yi, ag, sg in zip(evo_ip["N"], evo_ip["ABS_NUM"], evo_ip["ABS_GRADE"], evo_ip["SLOPE_GRADE"]):
+                label = f"{ag}{sg}" if isinstance(ag, str) and sg else ag
+                fig_e.add_annotation(x=xi, y=yi, text=label, showarrow=False, font=dict(size=12, color="#333", family="sans-serif"), yshift=14)
+            fig_e.update_xaxes(tickmode="array", tickvals=evo_ip["N"].tolist(), ticktext=[f"{int(n)}회차" for n in evo_ip["N"].tolist()], showgrid=False, zeroline=False, showline=False)
+            fig_e.update_yaxes(tickmode="array", tickvals=[5,4,3,2,1], ticktext=["S","A","B","C","D"], range=[0.7, 5.3], showgrid=False, zeroline=False, showline=False)
+            fig_e.update_layout(height=200, margin=dict(l=8, r=8, t=8, b=8), showlegend=False)
+            st.plotly_chart(fig_e, use_container_width=True, config={"displayModeBar": False})
+        
+        st.divider()
+
+        # [UI] 포지셔닝 맵 & 전체 표
+        # (기존 로직 동일 - 간략화 위해 일부 공통 함수 사용 가능하나 원본 유지)
+        pos_map = {(r, c): [] for r in ROW_LABELS for c in COL_LABELS}
+        for _, r in base.iterrows():
+            ra = str(r["종합_절대등급"]) if pd.notna(r["종합_절대등급"]) else None
+            rs = str(r["종합_상승등급"]) if pd.notna(r["종합_상승등급"]) else None
+            if ra in ROW_LABELS and rs in COL_LABELS: pos_map[(ra, rs)].append(r["IP"])
+
+        z = [[(ABS_SCORE[rr] + SLO_SCORE[cc]) / 2.0 for cc in COL_LABELS] for rr in ROW_LABELS]
+        fig = px.imshow(z, x=COL_LABELS, y=ROW_LABELS, origin="upper", color_continuous_scale="Blues", range_color=[1, 5], text_auto=False, aspect="auto").update_traces(xgap=0.0, ygap=0.0)
+        fig.update_xaxes(showticklabels=False, title=None, ticks="")
+        fig.update_yaxes(showticklabels=False, title=None, ticks="")
+        fig.update_layout(height=760, margin=dict(l=2, r=2, t=2, b=2), coloraxis_showscale=False)
+        fig.update_traces(hovertemplate="<extra></extra>")
+
+        for r_idx, rr in enumerate(ROW_LABELS):
+            for c_idx, cc in enumerate(COL_LABELS):
+                cell_val = z[r_idx][c_idx]
+                names = pos_map[(rr, cc)]
+                color = "#FFFFFF" if cell_val >= 3.3 else "#111111"
+                fig.add_annotation(x=cc, y=rr, xref="x", yref="y", text=f"<b style='letter-spacing:0.5px'>{rr}{cc}</b>", showarrow=False, font=dict(size=22, color=color, family="sans-serif"), xanchor="center", yanchor="top", yshift=80)
+                if names: fig.add_annotation(x=cc, y=rr, xref="x", yref="y", text=f"<span style='line-height:1.04'>{'<br>'.join(names)}</span>", showarrow=False, font=dict(size=12, color=color, family="sans-serif"), xanchor="center", yanchor="middle", yshift=6)
+        
+        st.markdown("#### 🗺️ 포지셔닝맵")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # AgGrid
+        table_view = base[["IP","종합등급","가구시청률_종합","타깃시청률_종합","TVING LIVE_종합","TVING VOD_종합"]].rename(columns={"종합등급":"종합","가구시청률_종합":"가구시청률","타깃시청률_종합":"타깃시청률","TVING LIVE_종합":"TVING LIVE","TVING VOD_종합":"TVING VOD"})
+        
+        grade_cell = JsCode("""function(params){ try{ const raw=params.value; if(raw==null)return{'text-align':'center'}; const v=String(raw); let bg=null,color=null,fw='700'; if(v.startsWith('S')){bg='rgba(0,91,187,0.14)';color='#003d80';}else if(v.startsWith('A')){bg='rgba(0,91,187,0.08)';color='#004a99';}else if(v.startsWith('B')){bg='rgba(0,0,0,0.03)';color='#333';fw='600';}else if(v.startsWith('C')){bg='rgba(42,97,204,0.08)';color='#2a61cc';}else if(v.startsWith('D')){bg='rgba(42,97,204,0.14)';color='#1a44a3';} return{'background-color':bg,'color':color,'font-weight':fw,'text-align':'center'}; }catch(e){return{'text-align':'center'};} }""")
+        
+        gb = GridOptionsBuilder.from_dataframe(table_view.fillna("–"))
+        gb.configure_default_column(resizable=True, sortable=True, filter=False, headerClass='centered-header bold-header', cellStyle={'textAlign':'center'})
+        gb.configure_column("IP", pinned='left', cellStyle={'textAlign':'left','fontWeight':'700'})
+        for colname in ["종합","가구시청률","타깃시청률","TVING LIVE","TVING VOD"]: gb.configure_column(colname, cellStyle=grade_cell, width=120)
+        
+        st.markdown("#### 📋 IP전체")
+        AgGrid(table_view.fillna("–"), gridOptions=gb.build(), theme="streamlit", height=420, fit_columns_on_grid_load=True, update_mode=GridUpdateMode.NO_UPDATE, allow_unsafe_jscode=True)
+
+    # =========================================================
+    # [CASE 2] 디지털 로직
+    # =========================================================
     else:
-        st.markdown(
-            f"#### {selected_ip} <span style='font-size:16px;color:#6b7b93'>자세히보기 (전체 비교 / 총 {len(ips)}작품)</span>",
-            unsafe_allow_html=True
-        )
-
-    # ---------- [최적화] 데이터 전처리 및 계산 로직 분리 ----------
-    
-    # 1. 전체 IP에 대해 회차별 숫자형 컬럼 생성 (Loop 밖에서 처리)
-    if "회차_numeric" not in df_all.columns:
-        df_all["회차_numeric"] = df_all["회차"].astype(str).str.extract(r"(\d+)", expand=False).astype(float)
-    
-    # 2. IP별 데이터프레임 딕셔너리 생성 (필터링 비용 절감) - 필터링된 ips만 사용
-    ip_dfs = {ip: df_all[df_all["IP"] == ip].copy() for ip in ips}
-
-    # 3. [Helper] 전체 데이터를 Numpy Array로 추출하는 함수
-    def _get_full_series(ip_df, metric, media):
-        """특정 IP, Metric의 전체 회차 데이터를 (x, y) Numpy Array로 반환"""
-        sub = ip_df[ip_df["metric"] == metric].copy()
-        
-        if media == "LIVE":
-            sub = sub[sub["매체"] == "TVING LIVE"]
-        elif media == "VOD":
-            sub = sub[sub["매체"] == "TVING VOD"]
-            # 넷플릭스 보정
-            if "넷플릭스편성작" in sub.columns:
-                is_netflix = (sub["넷플릭스편성작"] == 1)
-                if is_netflix.any():
-                    sub.loc[is_netflix, "value"] = pd.to_numeric(sub.loc[is_netflix, "value"], errors="coerce") * NETFLIX_VOD_FACTOR
-
-        sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
-        sub = sub.dropna(subset=["value", "회차_numeric"])
-        
-        if sub.empty: return None
-        
-        if metric in ["H시청률", "T시청률"]:
-            s = sub.groupby("회차_numeric")["value"].mean().reset_index()
-        else:
-            s = sub.groupby("회차_numeric")["value"].sum().reset_index()
+        # [Col 3] 필터
+        with head[2]:
+            ep_cutoff = st.selectbox("회차 기준", EP_CHOICES, index=1, key="growth_d_ep_cutoff", label_visibility="collapsed")
             
-        s = s.sort_values("회차_numeric")
-        return s["회차_numeric"].values.astype(float), s["value"].values.astype(float)
-
-    # 4. [Pre-Calculation] 필터링된 IP들의 Metric별 전체 (x, y) 데이터를 미리 추출
-    ip_metric_cache = {}
-    for ip in ips:
-        ip_metric_cache[ip] = {}
-        curr_df = ip_dfs[ip]
-        for disp, metric, media in METRICS:
-            ip_metric_cache[ip][disp] = _get_full_series(curr_df, metric, media)
-
-    # 5. [Calculation] Numpy Slicing을 이용한 통계 계산
-    def _calc_stats_from_cache(xy_tuple, n_cutoff, metric_type):
-        if xy_tuple is None: return np.nan, np.nan
+        st.markdown(f"#### {selected_ip} <span style='font-size:16px;color:#6b7b93'>자세히보기</span>", unsafe_allow_html=True)
         
-        x, y = xy_tuple
-        mask = x <= float(n_cutoff)
-        x_sub, y_sub = x[mask], y[mask]
+        ips = all_ip_list
         
-        if len(x_sub) == 0: return np.nan, np.nan
-        
-        # Abs Value
-        if metric_type in ["가구시청률", "타깃시청률"]:
-            abs_val = np.mean(y_sub)
-        else:
-            abs_val = np.mean(y_sub)
+        # --- [Logic] 디지털용 계산 헬퍼 (로컬 정의) ---
+        def _get_full_series_digital(ip_df, metric_name, mtype):
+            if metric_name == "조회수": sub = _get_view_data(ip_df)
+            else: sub = ip_df[ip_df["metric"] == metric_name].copy()
+            sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
+            sub = sub.dropna(subset=["value", "회차_numeric"])
+            if sub.empty: return None
+            if mtype == "sum": s = sub.groupby("회차_numeric", as_index=False)["value"].sum()
+            else: s = sub.groupby("회차_numeric", as_index=False)["value"].mean()
+            s = s.sort_values("회차_numeric")
+            return s["회차_numeric"].values.astype(float), s["value"].values.astype(float)
             
-        # Slope
-        if len(x_sub) < 2:
-            slope = np.nan
-        else:
-            try:
-                slope = np.polyfit(x_sub, y_sub, 1)[0]
-            except:
-                slope = np.nan
-        return abs_val, slope
+        def _calc_stats_digital(xy_tuple, n_cutoff, use_slope):
+            if xy_tuple is None: return np.nan, np.nan
+            x, y = xy_tuple
+            mask = (x >= 1) & (x <= float(n_cutoff))
+            x_sub, y_sub = x[mask], y[mask]
+            if len(x_sub) == 0: return np.nan, np.nan
+            abs_val = float(np.nanmean(y_sub))
+            slope = float(np.polyfit(x_sub, y_sub, 1)[0]) if (use_slope and len(x_sub) >= 2) else np.nan
+            return abs_val, slope
 
-    def _quintile_grade(series, labels):
-        s = pd.Series(series).astype(float)
-        valid = s.dropna()
-        if valid.empty: return pd.Series(index=s.index, data=np.nan)
-        ranks = valid.rank(method="average", ascending=False, pct=True)
-        bins = [0, .2, .4, .6, .8, 1.0000001]
-        idx = np.digitize(ranks.values, bins, right=True) - 1
-        idx = np.clip(idx, 0, 4)
-        out = pd.Series([labels[i] for i in idx], index=valid.index)
-        return out.reindex(s.index)
+        def _quintile_grade_d(series, labels):
+            s = pd.Series(series).astype(float)
+            valid = s.dropna()
+            if valid.empty: return pd.Series(index=s.index, data=np.nan)
+            ranks = valid.rank(method="average", ascending=False, pct=True)
+            bins = [0, .2, .4, .6, .8, 1.0000001]
+            idx = np.digitize(ranks.values, bins, right=True) - 1
+            idx = np.clip(idx, 0, 4)
+            return pd.Series([labels[i] for i in idx], index=valid.index).reindex(s.index)
 
-    def _to_percentile(s):
-        s = pd.Series(s).astype(float)
-        return s.rank(pct=True) * 100
+        def _to_percentile_d(s):
+            return pd.Series(s).astype(float).rank(pct=True) * 100
 
-    # ---------- [메인 로직] 회차별 등급 산출 (Loop Optimized) ----------
-    
-    # 선택된 IP의 최대 회차 확인
-    sel_ip_df = df_all[df_all["IP"] == selected_ip]
-    if "회차_numeric" in sel_ip_df.columns:
-        _max_ep_val = pd.to_numeric(sel_ip_df["회차_numeric"], errors="coerce").max()
-    else:
-        _max_ep_val = 0
-    
-    if pd.isna(_max_ep_val) or _max_ep_val == 0:
-        _Ns = [min(EP_CHOICES)]
-    else:
-        _Ns = [n for n in EP_CHOICES if n <= _max_ep_val]
-    
-    needed_cutoffs = set(_Ns)
-    needed_cutoffs.add(ep_cutoff)
-    sorted_cutoffs = sorted(list(needed_cutoffs))
+        # --- 계산 실행 ---
+        # 1. IP별 Series 캐싱
+        ip_metric_cache = {}
+        for ip in ips:
+            ip_metric_cache[ip] = {}
+            curr_df = df_all[df_all["IP"] == ip]
+            for disp, metric_name, mtype, _ in METRICS_DEF_DIGITAL:
+                ip_metric_cache[ip][disp] = _get_full_series_digital(curr_df, metric_name, mtype)
 
-    evo_rows = []
-    base_for_current_cutoff = None 
-
-    # 통합 Loop
-    for n in sorted_cutoffs:
-        tmp_rows = []
-        for ip in ips: # 필터링된 IP들만 순회
-            row = {"IP": ip}
-            for disp, _, _ in METRICS:
-                xy = ip_metric_cache[ip][disp]
-                abs_v, slope_v = _calc_stats_from_cache(xy, n, disp)
-                row[f"{disp}_절대"] = abs_v
-                row[f"{disp}_기울기"] = slope_v
-            tmp_rows.append(row)
+        # 2. 루프 계산
+        sel_ip_df = df_all[df_all["IP"] == selected_ip]
+        _max_ep_val = pd.to_numeric(sel_ip_df["회차_numeric"], errors="coerce").max() if not sel_ip_df.empty else 0
+        if pd.isna(_max_ep_val) or _max_ep_val == 0: _Ns = [min(EP_CHOICES)]
+        else: _Ns = [n for n in EP_CHOICES if n <= _max_ep_val]
         
-        tmp_df = pd.DataFrame(tmp_rows)
+        sorted_cutoffs = sorted(list(set(_Ns) | {ep_cutoff}))
+        evo_rows = []
+        base = pd.DataFrame() # 초기화
+
+        for n in sorted_cutoffs:
+            tmp_rows = []
+            for ip in ips:
+                row = {"IP": ip}
+                for disp, _, _, use_slope in METRICS_DEF_DIGITAL:
+                    xy = ip_metric_cache[ip][disp]
+                    abs_v, slope_v = _calc_stats_digital(xy, n, use_slope)
+                    row[f"{disp}_절대"] = abs_v
+                    row[f"{disp}_기울기"] = slope_v
+                tmp_rows.append(row)
+            
+            tmp_df = pd.DataFrame(tmp_rows)
+            for disp, _, _, _ in METRICS_DEF_DIGITAL:
+                tmp_df[f"{disp}_절대등급"] = _quintile_grade_d(tmp_df[f"{disp}_절대"], ["S","A","B","C","D"])
+                tmp_df[f"{disp}_상승등급"] = _quintile_grade_d(tmp_df[f"{disp}_기울기"], SLOPE_LABELS)
+                tmp_df[f"{disp}_종합"] = tmp_df[f"{disp}_절대등급"].astype(str) + tmp_df[f"{disp}_상승등급"].astype(str).replace("nan", "")
+            
+            tmp_df["_ABS_PCT_MEAN"] = pd.concat([_to_percentile_d(tmp_df[f"{d}_절대"]) for d,_,_,_ in METRICS_DEF_DIGITAL], axis=1).mean(axis=1)
+            tmp_df["_SLOPE_PCT_MEAN"] = pd.concat([_to_percentile_d(tmp_df[f"{d}_기울기"]) for d,_,_,_ in METRICS_DEF_DIGITAL], axis=1).mean(axis=1)
+            tmp_df["종합_절대등급"] = _quintile_grade_d(tmp_df["_ABS_PCT_MEAN"], ["S","A","B","C","D"])
+            tmp_df["종합_상승등급"] = _quintile_grade_d(tmp_df["_SLOPE_PCT_MEAN"], SLOPE_LABELS)
+            tmp_df["종합등급"] = tmp_df["종합_절대등급"].astype(str) + tmp_df["종합_상승등급"].astype(str).replace("nan", "")
+
+            if n == ep_cutoff:
+                base = tmp_df.copy()
+
+            if n in _Ns:
+                row = tmp_df[tmp_df["IP"] == selected_ip]
+                if not row.empty and pd.notna(row.iloc[0]["종합_절대등급"]):
+                    ag = str(row.iloc[0]["종합_절대등급"])
+                    sg = str(row.iloc[0]["종합_상승등급"]) if pd.notna(row.iloc[0]["종합_상승등급"]) else ""
+                    evo_rows.append({ "N": n, "ABS_GRADE": ag, "SLOPE_GRADE": sg, "ABS_NUM": ABS_NUM.get(ag, np.nan) })
         
-        # 등급 산정 (필터링된 그룹 내에서의 상대평가)
-        for disp, _, _ in METRICS:
-            tmp_df[f"{disp}_절대등급"] = _quintile_grade(tmp_df[f"{disp}_절대"], ["S","A","B","C","D"])
-            tmp_df[f"{disp}_상승등급"] = _quintile_grade(tmp_df[f"{disp}_기울기"], SLOPE_LABELS)
-            tmp_df[f"{disp}_종합"] = tmp_df[f"{disp}_절대등급"].astype(str) + tmp_df[f"{disp}_상승등급"].astype(str).replace("nan", "")
-        
-        tmp_df["_ABS_PCT_MEAN"] = pd.concat([_to_percentile(tmp_df[f"{d}_절대"]) for d,_,_ in METRICS], axis=1).mean(axis=1)
-        tmp_df["_SLOPE_PCT_MEAN"] = pd.concat([_to_percentile(tmp_df[f"{d}_기울기"]) for d,_,_ in METRICS], axis=1).mean(axis=1)
-        tmp_df["종합_절대등급"] = _quintile_grade(tmp_df["_ABS_PCT_MEAN"], ["S","A","B","C","D"])
-        tmp_df["종합_상승등급"] = _quintile_grade(tmp_df["_SLOPE_PCT_MEAN"], SLOPE_LABELS)
-        tmp_df["종합등급"] = tmp_df["종합_절대등급"].astype(str) + tmp_df["종합_상승등급"].astype(str).replace("nan", "")
-
-        # 현재 Cutoff(상단 카드용) 데이터 저장
-        if n == ep_cutoff:
-            base = tmp_df.copy() 
-
-        # 그래프용 데이터 수집
-        if n in _Ns:
-            row = tmp_df[tmp_df["IP"] == selected_ip]
-            if not row.empty and pd.notna(row.iloc[0]["종합_절대등급"]):
-                ag = str(row.iloc[0]["종합_절대등급"])
-                sg = str(row.iloc[0]["종합_상승등급"]) if pd.notna(row.iloc[0]["종합_상승등급"]) else ""
-                evo_rows.append({
-                    "N": n,
-                    "회차라벨": f"{n}회차",
-                    "ABS_GRADE": ag,
-                    "SLOPE_GRADE": sg,
-                    "ABS_NUM": ABS_NUM.get(ag, np.nan)
-                })
-
-    if 'base' not in locals(): base = tmp_df.copy()
-
-    # ---------- [선택작품 요약카드] ----------
-    try:
+        # [UI] 요약 카드
+        if base.empty: st.error("계산 결과 없음"); return
         focus = base[base["IP"] == selected_ip].iloc[0]
-    except IndexError:
-        st.error(f"선택된 IP({selected_ip})의 데이터를 계산할 수 없습니다.")
+
+        st.markdown("<div class='growth-kpi'>", unsafe_allow_html=True)
+        card_cols = st.columns([2, 1, 1, 1, 1])
+        with card_cols[0]:
+            st.markdown(f"""
+                <div class="kpi-card" style="height:110px;border:2px solid #004a99;background:linear-gradient(180deg,#e8f0ff, #ffffff);">
+                  <div class="kpi-title" style="font-size:15px;color:#003d80;">종합등급</div>
+                  <div class="kpi-value" style="font-size:40px;color:#003d80;">{focus['종합등급'] if pd.notna(focus['종합등급']) else '–'}</div>
+                </div>""", unsafe_allow_html=True)
+        def _grade_card(col, title, val):
+            with col: st.markdown(f"""<div class="kpi-card" style="height:110px;"><div class="kpi-title">{title}</div><div class="kpi-value" style="font-size:28px;">{val if pd.notna(val) else '–'}</div></div>""", unsafe_allow_html=True)
+        
+        _grade_card(card_cols[1], "조회수 등급", focus["조회수_종합"])
+        _grade_card(card_cols[2], "화제성 등급", focus["화제성_종합"])
+        _grade_card(card_cols[3], " ", " ")
+        _grade_card(card_cols[4], " ", " ")
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+
+        # [UI] 등급 추이 그래프
+        # 유효 회차 확인
+        _v_view = _get_view_data(df_all[df_all["IP"] == selected_ip])
+        _v_view["ep"] = pd.to_numeric(_v_view["회차_numeric"] if "회차_numeric" in _v_view.columns else _v_view["회차"].astype(str).str.extract(r"(\d+)", expand=False), errors="coerce")
+        _v_view["val"] = pd.to_numeric(_v_view["value"], errors="coerce").replace(0, np.nan)
+        has_ep1 = bool(_v_view.loc[_v_view["ep"] == 1, "val"].notna().any())
+        has_ep2 = bool(_v_view.loc[_v_view["ep"] == 2, "val"].notna().any())
+
+        evo = pd.DataFrame(evo_rows)
+        if not evo.empty:
+            fig_e = go.Figure()
+            fig_e.add_vrect(x0=ep_cutoff - 0.5, x1=ep_cutoff + 0.5, fillcolor="rgba(0,90,200,0.12)", line_width=0)
+            fig_e.add_trace(go.Scatter(x=evo["N"], y=evo["ABS_NUM"], mode="lines+markers", line=dict(shape="spline", width=3), marker=dict(size=8), name=selected_ip, hoverinfo="skip"))
+            for xi, yi, ag, sg in zip(evo["N"], evo["ABS_NUM"], evo["ABS_GRADE"], evo["SLOPE_GRADE"]):
+                label = f"{ag}{sg}" if isinstance(ag, str) and sg else ag
+                if int(xi) == 2 and (not has_ep1 or not has_ep2): label = "-"
+                fig_e.add_annotation(x=xi, y=yi, text=label, showarrow=False, font=dict(size=12, color="#333", family="sans-serif"), yshift=14)
+            fig_e.update_xaxes(tickmode="array", tickvals=evo["N"].tolist(), ticktext=[f"{int(n)}회차" for n in evo["N"].tolist()], showgrid=False, zeroline=False, showline=False)
+            fig_e.update_yaxes(tickmode="array", tickvals=[5,4,3,2,1], ticktext=["S","A","B","C","D"], range=[0.7, 5.3], showgrid=False, zeroline=False, showline=False)
+            fig_e.update_layout(height=200, margin=dict(l=8, r=8, t=8, b=8), showlegend=False)
+            st.plotly_chart(fig_e, use_container_width=True, config={"displayModeBar": False})
+        
+        st.divider()
+
+        # [UI] 포지셔닝 맵 (디지털)
+        pos_map = {(r, c): [] for r in ROW_LABELS for c in COL_LABELS}
+        for _, r in base.iterrows():
+            ra = str(r["종합_절대등급"]) if pd.notna(r["종합_절대등급"]) else None
+            rs = str(r["종합_상승등급"]) if pd.notna(r["종합_상승등급"]) else None
+            if ra in ROW_LABELS and rs in COL_LABELS: pos_map[(ra, rs)].append(r["IP"])
+
+        z = [[(ABS_SCORE[rr] + SLO_SCORE[cc]) / 2.0 for cc in COL_LABELS] for rr in ROW_LABELS]
+        fig = px.imshow(z, x=COL_LABELS, y=ROW_LABELS, origin="upper", color_continuous_scale="Blues", range_color=[1, 5], text_auto=False, aspect="auto").update_traces(xgap=0.0, ygap=0.0)
+        fig.update_xaxes(showticklabels=False, title=None, ticks="")
+        fig.update_yaxes(showticklabels=False, title=None, ticks="")
+        fig.update_layout(height=760, margin=dict(l=2, r=2, t=2, b=2), coloraxis_showscale=False)
+        fig.update_traces(hovertemplate="<extra></extra>")
+
+        for r_idx, rr in enumerate(ROW_LABELS):
+            for c_idx, cc in enumerate(COL_LABELS):
+                cell_val = z[r_idx][c_idx]
+                names = pos_map[(rr, cc)]
+                color = "#FFFFFF" if cell_val >= 3.3 else "#111111"
+                fig.add_annotation(x=cc, y=rr, xref="x", yref="y", text=f"<b style='letter-spacing:0.5px'>{rr}{cc}</b>", showarrow=False, font=dict(size=22, color=color, family="sans-serif"), xanchor="center", yanchor="top", yshift=80)
+                if names: fig.add_annotation(x=cc, y=rr, xref="x", yref="y", text=f"<span style='line-height:1.04'>{'<br>'.join(names)}</span>", showarrow=False, font=dict(size=12, color=color, family="sans-serif"), xanchor="center", yanchor="middle", yshift=6)
+
+        st.markdown("#### 🗺️ 포지셔닝맵")
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # AgGrid (디지털)
+        table_view = base[["IP","종합등급","조회수_종합","화제성_종합"]].rename(columns={"종합등급":"종합","조회수_종합":"조회수","화제성_종합":"화제성"})
+        grade_cell = JsCode("""function(params){ try{ const raw=params.value; if(raw==null)return{'text-align':'center'}; const v=String(raw); let bg=null,color=null,fw='700'; if(v.startsWith('S')){bg='rgba(0,91,187,0.14)';color='#003d80';}else if(v.startsWith('A')){bg='rgba(0,91,187,0.08)';color='#004a99';}else if(v.startsWith('B')){bg='rgba(0,0,0,0.03)';color='#333';fw='600';}else if(v.startsWith('C')){bg='rgba(42,97,204,0.08)';color='#2a61cc';}else if(v.startsWith('D')){bg='rgba(42,97,204,0.14)';color='#1a44a3';} return{'background-color':bg,'color':color,'font-weight':fw,'text-align':'center'}; }catch(e){return{'text-align':'center'};} }""")
+        gb = GridOptionsBuilder.from_dataframe(table_view.fillna("–"))
+        gb.configure_default_column(resizable=True, sortable=True, filter=False, headerClass='centered-header bold-header', cellStyle={'textAlign':'center'})
+        gb.configure_column("IP", pinned='left', cellStyle={'textAlign':'left','fontWeight':'700'})
+        for colname in ["종합","조회수","화제성"]: gb.configure_column(colname, cellStyle=grade_cell, width=120)
+
+        st.markdown("#### 📋 IP전체-디지털")
+        AgGrid(table_view.fillna("–"), gridOptions=gb.build(), theme="streamlit", height=420, fit_columns_on_grid_load=True, update_mode=GridUpdateMode.NO_UPDATE, allow_unsafe_jscode=True)
+
+# =====================================================
+# [수정] 7. 사전지표 분석 페이지 렌더러 (v2.3 - 시사지표 박스 제거)
+#endregion
+#region [ 6-5. 사전지표 분석 ]
+def render_pre_launch_analysis():
+    df_all = load_data()
+    
+    # --- 1. 색상 및 스타일 정의 ---
+    C_TARGET = "#283593"  # Target (Deep Indigo)
+    C_PREV   = "#78909C"  # Previous (Blue Grey)
+    C_GROUP  = "#EEEEEE"  # Group (Light Grey)
+    
+    # --- 2. 분석 대상 지표 설정 ---
+    SISA_MAP = {
+        "시사지표_장르": "장르 및 소재",
+        "시사지표_캐릭터": "캐릭터 및 캐스팅",
+        "시사지표_전개": "전개와 구성",
+        "시사지표_공감": "공감성",
+        "시사지표_개연성": "개연성",
+        "시사지표_대사": "대사 및 표현",
+        "시사지표_연출": "연출 및 완성도"
+    }
+    METRICS_SISA = list(SISA_MAP.keys())
+    
+    WEEKS_DIGITAL = ["W-6", "W-5", "W-4", "W-3", "W-2", "W-1"]
+    WEEKS_MPI = ["W-6", "W-5", "W-4", "W-3", "W-2", "W-1", "W+1", "W+2"]
+
+    # --- 3. 사이드바 / 헤더 ---
+    global_ip = st.session_state.get("global_ip")
+    if not global_ip or global_ip not in df_all["IP"].unique():
+        st.error("좌측 사이드바에서 분석할 IP를 먼저 선택해주세요.")
         return
 
-    st.markdown("<div class='growth-kpi'>", unsafe_allow_html=True)
-    card_cols = st.columns([2, 1, 1, 1, 1])
-    with card_cols[0]:
-        st.markdown(
-            f"""
-            <div class="kpi-card" style="height:110px;border:2px solid #004a99;background:linear-gradient(180deg,#e8f0ff, #ffffff);">
-              <div class="kpi-title" style="font-size:15px;color:#003d80;">종합등급</div>
-              <div class="kpi-value" style="font-size:40px;color:#003d80;">{focus['종합등급'] if pd.notna(focus['종합등급']) else '–'}</div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-    def _grade_card(col, title, val):
-        with col:
-            st.markdown(
-                f"""
-                <div class="kpi-card" style="height:110px;">
-                  <div class="kpi-title">{title}</div>
-                  <div class="kpi-value" style="font-size:28px;">{val if pd.notna(val) else '–'}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-    _grade_card(card_cols[1], "가구시청률 등급", focus["가구시청률_종합"])
-    _grade_card(card_cols[2], "타깃시청률 등급", focus["타깃시청률_종합"])
-    _grade_card(card_cols[3], "TVING LIVE 등급", focus["TVING LIVE_종합"])
-    _grade_card(card_cols[4], "TVING VOD 등급",  focus["TVING VOD_종합"])
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-    
-    # ===== [회차별 등급 추이: 선택 IP] =====
-    evo = pd.DataFrame(evo_rows)
-    if evo.empty:
-        st.info("회차별 등급 추이를 표시할 데이터가 부족합니다.")
-    else:
-        fig_e = go.Figure()
-        fig_e.add_vrect(
-            x0=ep_cutoff - 0.5, x1=ep_cutoff + 0.5,
-            fillcolor="rgba(0,90,200,0.12)", line_width=0
-        )
-        fig_e.add_trace(go.Scatter(
-            x=evo["N"], y=evo["ABS_NUM"],
-            mode="lines+markers",
-            line=dict(shape="spline", width=3),
-            marker=dict(size=8),
-            name=selected_ip,
-            hoverinfo="skip"
-        ))
-        for xi, yi, ag, sg in zip(evo["N"], evo["ABS_NUM"], evo["ABS_GRADE"], evo["SLOPE_GRADE"]):
-            label = f"{ag}{sg}" if isinstance(ag, str) and sg else ag
-            fig_e.add_annotation(
-                x=xi, y=yi, text=label, showarrow=False,
-                font=dict(size=12, color="#333", family="sans-serif"), yshift=14
-            )
-        fig_e.update_xaxes(
-            tickmode="array",
-            tickvals=evo["N"].tolist(),
-            ticktext=[f"{int(n)}회차" for n in evo["N"].tolist()],
-            showgrid=False, zeroline=False, showline=False
-        )
-        fig_e.update_yaxes(
-            tickmode="array",
-            tickvals=[5,4,3,2,1],
-            ticktext=["S","A","B","C","D"],
-            range=[0.7, 5.3],
-            showgrid=False, zeroline=False, showline=False
-        )
-        fig_e.update_layout(
-            height=200,
-            margin=dict(l=8, r=8, t=8, b=8),
-            showlegend=False
-        )
-        
-        c_evo, = st.columns(1)
-        with c_evo:
-            st.plotly_chart(fig_e, use_container_width=True, config={"displayModeBar": False})
-
-    st.divider()
-
-    # ---------- [포지셔닝맵] ----------
-    st.markdown("#### 🗺️ 포지셔닝맵")
-
-    pos_map = {(r, c): [] for r in ROW_LABELS for c in COL_LABELS}
-    for _, r in base.iterrows():
-        ra = str(r["종합_절대등급"]) if pd.notna(r["종합_절대등급"]) else None
-        rs = str(r["종합_상승등급"]) if pd.notna(r["종합_상승등급"]) else None
-        if ra in ROW_LABELS and rs in COL_LABELS:
-            pos_map[(ra, rs)].append(r["IP"])
-
-    z = []
-    for rr in ROW_LABELS:
-        row_z = []
-        for cc in COL_LABELS:
-            row_z.append((ABS_SCORE[rr] + SLO_SCORE[cc]) / 2.0)
-        z.append(row_z)
-
-    fig = px.imshow(
-        z,
-        x=COL_LABELS, y=ROW_LABELS,
-        origin="upper",
-        color_continuous_scale="Blues",
-        range_color=[1, 5],
-        text_auto=False,
-        aspect="auto"
-    ).update_traces(xgap=0.0, ygap=0.0)
-
-    fig.update_xaxes(showticklabels=False, title=None, ticks="")
-    fig.update_yaxes(showticklabels=False, title=None, ticks="")
-    fig.update_layout(
-        height=760,
-        margin=dict(l=2, r=2, t=2, b=2),
-        coloraxis_showscale=False
-    )
-    fig.update_traces(hovertemplate="<extra></extra>")
-
-    def _font_color(val: float) -> str:
-        return "#FFFFFF" if val >= 3.3 else "#111111"
-
-    for r_idx, rr in enumerate(ROW_LABELS):
-        for c_idx, cc in enumerate(COL_LABELS):
-            cell_val = z[r_idx][c_idx]
-            names = pos_map[(rr, cc)]
-            color = _font_color(cell_val)
-
-            fig.add_annotation(
-                x=cc, y=rr, xref="x", yref="y",
-                text=f"<b style='letter-spacing:0.5px'>{rr}{cc}</b>",
-                showarrow=False,
-                font=dict(size=22, color=color, family="sans-serif"),
-                xanchor="center", yanchor="top",
-                xshift=0, yshift=80, align="left"
-            )
-
-            if names:
-                fig.add_annotation(
-                    x=cc, y=rr, xref="x", yref="y",
-                    text=f"<span style='line-height:1.04'>{'<br>'.join(names)}</span>",
-                    showarrow=False,
-                    font=dict(size=12, color=color, family="sans-serif"),
-                    xanchor="center", yanchor="middle",
-                    yshift=6
-                )
-    
-    c_posmap, = st.columns(1)
-    with c_posmap:
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-    # ---------- [전체표] ----------
-    table = base[[
-        "IP","종합_절대등급","종합_상승등급","종합등급",
-        "가구시청률_종합","타깃시청률_종합","TVING LIVE_종합","TVING VOD_종합"
-    ]].copy()
-
-    table["_abs_key"]   = table["종합_절대등급"].map(ABS_SCORE).fillna(0)
-    table["_slope_key"] = table["종합_상승등급"].map(SLO_SCORE).fillna(0)
-    table = table.sort_values(["_abs_key","_slope_key","IP"], ascending=[False, False, True])
-
-    table_view = table[[
-        "IP","종합등급","가구시청률_종합","타깃시청률_종합","TVING LIVE_종합","TVING VOD_종합"
-    ]].rename(columns={
-        "종합등급":"종합",
-        "가구시청률_종합":"가구시청률",
-        "타깃시청률_종합":"타깃시청률",
-        "TVING LIVE_종합":"TVING LIVE",
-        "TVING VOD_종합":"TVING VOD"
-    })
-
-    grade_cell = JsCode("""
-    function(params){
-      try{
-        const raw = params.value;
-        if (raw === null || raw === undefined) {
-          return {'text-align':'center'};
-        }
-        const v = String(raw);
-        let bg=null, color=null, fw='700';
-        if (/^[SABCD]/.test(v)) {
-          if (v.startsWith('S')) { bg='rgba(0,91,187,0.14)'; color='#003d80'; }
-          else if (v.startsWith('A')) { bg='rgba(0,91,187,0.08)'; color='#004a99'; }
-          else if (v.startsWith('B')) { bg='rgba(0,0,0,0.03)'; color='#333'; fw='600'; }
-          else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color='#2a61cc'; }
-          else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color='#1a44a3'; }
-          return {'background-color':bg,'color':color,'font-weight':fw,'text-align':'center'};
-        }
-        return {'text-align':'center'};
-      } catch (e) {
-        return {'text-align':'center'};
-      }
-    }""")
-
-    gb = GridOptionsBuilder.from_dataframe(table_view.fillna("–"))
-    gb.configure_default_column(resizable=True, sortable=True, filter=False,
-                                headerClass='centered-header bold-header',
-                                cellStyle={'textAlign':'center'})
-    gb.configure_column("IP", pinned='left', cellStyle={'textAlign':'left','fontWeight':'700'})
-    for colname in ["종합","가구시청률","타깃시청률","TVING LIVE","TVING VOD"]:
-        gb.configure_column(colname, cellStyle=grade_cell, width=120)
-    grid_options = gb.build()
-
-    st.markdown("#### 📋 IP전체")
-    AgGrid(
-        table_view.fillna("–"),
-        gridOptions=grid_options,
-        theme="streamlit",
-        height=420,
-        fit_columns_on_grid_load=True,
-        update_mode=GridUpdateMode.NO_UPDATE,
-        allow_unsafe_jscode=True
-    )
-#endregion
-
-
-#region [ 11. 페이지 5: 성장스코어-디지털 ]
-# =====================================================
-# [수정] 2025-11-13: 회차별 등급 추이 계산 로직 최적화 (Pre-fetch + Numpy Slicing)
-def render_growth_score_digital():
-    """
-    [페이지 7] 성장스코어-디지털 렌더링 함수
-    """
-    df_all = load_data().copy() # [3. 공통 함수]
-    df_all = _exclude_future_ips(df_all)
-
-
-    # ---------- 설정 ----------
-    EP_CHOICES = [2, 4, 6, 8, 10, 12, 14, 16]
-    ROW_LABELS = ["S","A","B","C","D"]
-    COL_LABELS = ["+2","+1","0","-1","-2"]
-    ABS_SCORE  = {"S":5,"A":4,"B":3,"C":2,"D":1}
-    SLO_SCORE  = {"+2":5,"+1":4,"0":3,"-1":2,"-2":1}
-    ABS_NUM    = {"S":5, "A":4, "B":3, "C":2, "D":1}
-    SLOPE_LABELS = ["+2", "+1", "0", "-1", "-2"]
-
-    METRICS = [
-        ("조회수", "조회수", "sum", True),
-        ("화제성", "F_Score", "mean", True),
-    ]
-
-    ips = sorted(df_all["IP"].dropna().unique().tolist())
-    if not ips:
-        st.warning("IP 데이터가 없습니다."); return
-
-    # ---------- 헤더(타이틀/선택) ----------
-    _ep_display = st.session_state.get("growth_d_ep_cutoff", 4)
-    head = st.columns([5, 3, 2])
-    with head[0]:
-        st.markdown(
-            f"## 🛰️ 성장스코어-디지털 <span style='font-size:20px;color:#6b7b93'>(~{_ep_display}회 기준)</span>",
-            unsafe_allow_html=True
-        )
-    with head[1]:
-        selected_ip = st.selectbox("IP 선택", ips, index=0,
-                                   key="growth_d_ip_select", label_visibility="collapsed")
-    with head[2]:
-        ep_cutoff = st.selectbox("회차 기준", EP_CHOICES, index=1,
-                                 key="growth_d_ep_cutoff", label_visibility="collapsed")
+    filter_cols = st.columns([4, 2, 2])
+    with filter_cols[0]:
+        st.markdown(f"<div class='page-title'>🌱 {global_ip} 사전지표 분석</div>", unsafe_allow_html=True)
 
     with st.expander("ℹ️ 지표 기준 안내", expanded=False):
-        st.markdown("""
+        st.markdown("<div class='gd-guideline'>", unsafe_allow_html=True)
+        st.markdown(textwrap.dedent("""
+            **사전지표 안내**
+            - **시사지표**: 사전 시사를 통해 수집된 항목별 평가 점수 (5점 만점)
+            - **MPI**: 초기 인지/선호/시청의향 조사 결과
+            - **디지털 조회**: 주간 월~일 조회수 발생 총합 / 유튜브,인스타그램,틱톡,네이버TV,페이스북
+            - **디지털 언급량**: 주간 월~일 디지털 언급량 총합 / 커뮤니티,트위터,블로그                     
+        """).strip())
+        st.markdown("</div>", unsafe_allow_html=True)
 
-**등급 체계**
-- **절대값 등급**: 각 항목별(디지털조회, 화제성점수) 수치를 비교군 내 순위화→ `S / A / B / C / D`
-- **상승률 등급**: 각 항목별(디지털조회, 화제성점수)의 주차별 증감정도를 비교군 내 순위화 → `+2 / +1 / 0 / -1 / -2`
-- **종합등급**: 절대값과 상승률 등급을 결합해 표기 (예: A+2).  
-        """)
-
-    st.markdown(
-        f"#### {selected_ip} <span style='font-size:16px;color:#6b7b93'>자세히보기</span>",
-        unsafe_allow_html=True
-    )
-
-    # ---------- [최적화] 데이터 전처리 및 계산 로직 분리 ----------
-
-    # 1. 전체 IP에 대해 회차별 숫자형 컬럼 생성 (Loop 밖에서 처리)
-    if "회차_numeric" not in df_all.columns:
-        df_all["회차_numeric"] = df_all["회차"].astype(str).str.extract(r"(\d+)", expand=False).astype(float)
+    # --- 4. 비교군 필터링 ---
+    target_row = df_all[df_all["IP"] == global_ip]
+    default_year = []
+    default_prog = None
     
-    # 2. IP별 데이터프레임 딕셔너리 생성 (필터링 비용 절감)
-    ip_dfs = {ip: df_all[df_all["IP"] == ip].copy() for ip in ips}
+    if not target_row.empty:
+        if "편성연도" in target_row.columns:
+            ymode = target_row["편성연도"].dropna().mode()
+            if not ymode.empty: default_year = [ymode.iloc[0]]
+        default_prog = target_row["편성"].dropna().mode().iloc[0] if not target_row["편성"].dropna().empty else None
+
+    all_years = sorted(df_all["편성연도"].dropna().unique().astype(str), reverse=True) if "편성연도" in df_all.columns else []
     
-    # 3. [Helper] 전체 데이터를 Numpy Array로 추출하는 함수
-    def _get_full_series_digital(ip_df, metric_name, mtype):
-        """특정 IP, Metric의 전체 회차 데이터를 (x, y) Numpy Array로 반환"""
-        if metric_name == "조회수":
-            sub = _get_view_data(ip_df) # [3. 공통 함수]
-        else:
-            sub = ip_df[ip_df["metric"] == metric_name].copy()
-            
-        sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
-        sub = sub.dropna(subset=["value", "회차_numeric"])
-        
-        if sub.empty: return None
-        
-        if mtype == "sum":
-            s = sub.groupby("회차_numeric", as_index=False)["value"].sum()
-        elif mtype == "rank_inv": # 참고용 (현재 미사용)
-            s = sub.groupby("회차_numeric", as_index=False)["value"].mean()
-            s["value"] = -1 * s["value"]
-        else:
-            s = sub.groupby("회차_numeric", as_index=False)["value"].mean()
-            
-        s = s.sort_values("회차_numeric")
-        return s["회차_numeric"].values.astype(float), s["value"].values.astype(float)
+    with filter_cols[1]:
+        sel_years = st.multiselect("비교군 연도", all_years, default=default_year, placeholder="연도 선택", label_visibility="collapsed")
     
-    # 4. [Pre-Calculation] 모든 IP의 Metric별 전체 (x, y) 데이터를 미리 추출
-    ip_metric_cache = {}
-    for ip in ips:
-        ip_metric_cache[ip] = {}
-        curr_df = ip_dfs[ip]
-        for disp, metric_name, mtype, _ in METRICS:
-            ip_metric_cache[ip][disp] = _get_full_series_digital(curr_df, metric_name, mtype)
+    with filter_cols[2]:
+        comp_prog_opt = st.selectbox("비교군 편성 기준", ["동일 편성", "전체"], index=0, label_visibility="collapsed")
 
-    # 5. [Calculation] Numpy Slicing을 이용한 통계 계산
-    def _calc_stats_from_cache_digital(xy_tuple, n_cutoff, use_slope):
-        if xy_tuple is None: return np.nan, np.nan
-        
-        x, y = xy_tuple
-        mask = (x >= 1) & (x <= float(n_cutoff))
-        x_sub, y_sub = x[mask], y[mask]
-        
-        if len(x_sub) == 0: return np.nan, np.nan
-        
-        # Abs Value (Mean of the time series)
-        abs_val = float(np.nanmean(y_sub))
-        
-        # Slope
-        if not use_slope or len(x_sub) < 2:
-            slope = np.nan
-        else:
-            try:
-                slope = float(np.polyfit(x_sub, y_sub, 1)[0])
-            except:
-                slope = np.nan
-                
-        return abs_val, slope
+    # --- 5. 데이터셋 준비 ---
+    df_target = df_all[df_all["IP"] == global_ip].copy()
 
-    def _quintile_grade(series, labels):
-        s = pd.Series(series).astype(float)
-        valid = s.dropna()
-        if valid.empty: return pd.Series(index=s.index, data=np.nan)
-        ranks = valid.rank(method="average", ascending=False, pct=True)
-        bins = [0, .2, .4, .6, .8, 1.0000001]
-        idx = np.digitize(ranks.values, bins, right=True) - 1
-        idx = np.clip(idx, 0, 4)
-        out = pd.Series([labels[i] for i in idx], index=valid.index)
-        return out.reindex(s.index)
+    df_group = df_all.copy()
+    if sel_years:
+        df_group = df_group[df_group["편성연도"].isin(sel_years)]
+    if comp_prog_opt == "동일 편성" and default_prog:
+        df_group = df_group[df_group["편성"] == default_prog]
+    df_group = df_group[df_group["IP"] != global_ip]
 
-    def _to_percentile(s):
-        s = pd.Series(s).astype(float)
-        return s.rank(pct=True) * 100
-
-    # ---------- [메인 로직] 회차별 등급 산출 (Loop Optimized) ----------
+    prev_ip_name = get_previous_work_ip(df_all, global_ip)
+    df_prev = pd.DataFrame()
+    prev_label = "전작(정보없음)"
+    if prev_ip_name:
+        df_prev = df_all[df_all["IP"] == prev_ip_name].copy()
+        prev_label = f"전작({prev_ip_name})"
     
-    sel_ip_df = ip_dfs[selected_ip]
-    if "회차_numeric" in sel_ip_df.columns:
-        _max_ep_val = pd.to_numeric(sel_ip_df["회차_numeric"], errors="coerce").max()
-    else:
-        _max_ep_val = 0
-
-    if pd.isna(_max_ep_val) or _max_ep_val == 0:
-        _Ns = [min(EP_CHOICES)]
-    else:
-        _Ns = [n for n in EP_CHOICES if n <= _max_ep_val]
-    
-    needed_cutoffs = set(_Ns)
-    needed_cutoffs.add(ep_cutoff)
-    sorted_cutoffs = sorted(list(needed_cutoffs))
-
-    evo_rows = []
-    base_for_current_cutoff = None
-
-    for n in sorted_cutoffs:
-        tmp_rows = []
-        for ip in ips:
-            row = {"IP": ip}
-            for disp, _, _, use_slope in METRICS:
-                xy = ip_metric_cache[ip][disp]
-                abs_v, slope_v = _calc_stats_from_cache_digital(xy, n, use_slope)
-                row[f"{disp}_절대"] = abs_v
-                row[f"{disp}_기울기"] = slope_v
-            tmp_rows.append(row)
-        
-        tmp_df = pd.DataFrame(tmp_rows)
-        
-        for disp, _, _, _ in METRICS:
-            tmp_df[f"{disp}_절대등급"] = _quintile_grade(tmp_df[f"{disp}_절대"], ["S","A","B","C","D"])
-            tmp_df[f"{disp}_상승등급"] = _quintile_grade(tmp_df[f"{disp}_기울기"], SLOPE_LABELS)
-            tmp_df[f"{disp}_종합"] = tmp_df[f"{disp}_절대등급"].astype(str) + tmp_df[f"{disp}_상승등급"].astype(str).replace("nan", "")
-
-        tmp_df["_ABS_PCT_MEAN"] = pd.concat([_to_percentile(tmp_df[f"{d}_절대"]) for d,_,_,_ in METRICS], axis=1).mean(axis=1)
-        tmp_df["_SLOPE_PCT_MEAN"] = pd.concat([_to_percentile(tmp_df[f"{d}_기울기"]) for d,_,_,_ in METRICS], axis=1).mean(axis=1)
-        tmp_df["종합_절대등급"] = _quintile_grade(tmp_df["_ABS_PCT_MEAN"], ["S","A","B","C","D"])
-        tmp_df["종합_상승등급"] = _quintile_grade(tmp_df["_SLOPE_PCT_MEAN"], SLOPE_LABELS)
-        tmp_df["종합등급"] = tmp_df["종합_절대등급"].astype(str) + tmp_df["종합_상승등급"].astype(str).replace("nan", "")
-
-        if n == ep_cutoff:
-            base = tmp_df.copy()
-
-        if n in _Ns:
-            row = tmp_df[tmp_df["IP"] == selected_ip]
-            if not row.empty and pd.notna(row.iloc[0]["종합_절대등급"]):
-                ag = str(row.iloc[0]["종합_절대등급"])
-                sg = str(row.iloc[0]["종합_상승등급"]) if pd.notna(row.iloc[0]["종합_상승등급"]) else ""
-                evo_rows.append({
-                    "N": n,
-                    "ABS_GRADE": ag,
-                    "SLOPE_GRADE": sg,
-                    "ABS_NUM": ABS_NUM.get(ag, np.nan)
-                })
-                
-    if 'base' not in locals(): base = tmp_df.copy()
-
-    # ---------- [선택작품 요약카드] ----------
-    focus = base[base["IP"] == selected_ip].iloc[0]
-
-    st.markdown("<div class='growth-kpi'>", unsafe_allow_html=True) # [수정] kpi-card 래퍼
-    card_cols = st.columns([2, 1, 1, 1, 1])
-    with card_cols[0]:
-        st.markdown(
-            f"""
-            <div class="kpi-card" style="height:110px;border:2px solid #004a99;background:linear-gradient(180deg,#e8f0ff, #ffffff);">
-              <div class="kpi-title" style="font-size:15px;color:#003d80;">종합등급</div>
-              <div class="kpi-value" style="font-size:40px;color:#003d80;">{focus['종합등급'] if pd.notna(focus['종합등급']) else '–'}</div>
-            </div>
-            """, unsafe_allow_html=True
-        )
-    def _grade_card(col, title, val):
-        with col:
-            st.markdown(
-                f"""
-                <div class="kpi-card" style="height:110px;">
-                  <div class="kpi-title">{title}</div>
-                  <div class="kpi-value" style="font-size:28px;">{val if pd.notna(val) else '–'}</div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-    _grade_card(card_cols[1], "조회수 등급", focus["조회수_종합"])
-    _grade_card(card_cols[2], "화제성 등급", focus["화제성_종합"])
-    _grade_card(card_cols[3], " ",  " ") # 빈칸
-    _grade_card(card_cols[4], " ",  " ")
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
-
-    # ===== [회차별 등급 추이: 선택 IP] =====
-    # 선택된 IP의 유효 회차 확인 (그래프 끊김 방지 등)
-    _v_view = _get_view_data(df_all[df_all["IP"] == selected_ip]) # [3. 공통 함수]
-    _v_view["ep"] = pd.to_numeric(
-        _v_view["회차_numeric"] if "회차_numeric" in _v_view.columns
-        else _v_view["회차"].astype(str).str.extract(r"(\d+)", expand=False),
-        errors="coerce"
-    )
-    _v_view["val"] = pd.to_numeric(_v_view["value"], errors="coerce").replace(0, np.nan)
-    has_ep1 = bool(_v_view.loc[_v_view["ep"] == 1, "val"].notna().any())
-    has_ep2 = bool(_v_view.loc[_v_view["ep"] == 2, "val"].notna().any())
-
-    evo = pd.DataFrame(evo_rows)
-    if evo.empty:
-        st.info("회차별 등급 추이를 표시할 데이터가 부족합니다.")
-    else:
-        fig_e = go.Figure()
-        fig_e.add_vrect(x0=ep_cutoff - 0.5, x1=ep_cutoff + 0.5,
-                        fillcolor="rgba(0,90,200,0.12)", line_width=0)
-
-        fig_e.add_trace(go.Scatter(
-            x=evo["N"], y=evo["ABS_NUM"],
-            mode="lines+markers",
-            line=dict(shape="spline", width=3),
-            marker=dict(size=8),
-            name=selected_ip,
-            hoverinfo="skip"
-        ))
-        for xi, yi, ag, sg in zip(evo["N"], evo["ABS_NUM"], evo["ABS_GRADE"], evo["SLOPE_GRADE"]):
-            label = f"{ag}{sg}" if isinstance(ag, str) and sg else ag
-            if int(xi) == 2 and (not has_ep1 or not has_ep2):
-                label = "-"
-            fig_e.add_annotation(
-                x=xi, y=yi, text=label,
-                showarrow=False, font=dict(size=12, color="#333", family="sans-serif"),
-                yshift=14
-            )
-        fig_e.update_xaxes(
-            tickmode="array",
-            tickvals=evo["N"].tolist(),
-            ticktext=[f"{int(n)}회차" for n in evo["N"].tolist()],
-            showgrid=False, zeroline=False, showline=False
-        )
-        fig_e.update_yaxes(
-            tickmode="array",
-            tickvals=[5,4,3,2,1],
-            ticktext=["S","A","B","C","D"],
-            range=[0.7, 5.3],
-            showgrid=False, zeroline=False, showline=False
-        )
-        fig_e.update_layout(height=200, margin=dict(l=8, r=8, t=8, b=8), showlegend=False)
-        
-        c_evo_d, = st.columns(1)
-        with c_evo_d:
-            st.plotly_chart(fig_e, use_container_width=True, config={"displayModeBar": False})
+    group_label = "그룹 평균"
 
     st.divider()
 
-    # ---------- [포지셔닝맵] ----------
-    st.markdown("#### 🗺️ 포지셔닝맵")
+    # --- 6. 시각화 헬퍼 함수 ---
 
-    pos_map = {(r, c): [] for r in ROW_LABELS for c in COL_LABELS}
-    for _, r in base.iterrows():
-        ra = str(r["종합_절대등급"]) if pd.notna(r["종합_절대등급"]) else None
-        rs = str(r["종합_상승등급"]) if pd.notna(r["종합_상승등급"]) else None
-        if ra in ROW_LABELS and rs in COL_LABELS:
-            pos_map[(ra, rs)].append(r["IP"])
+    # (A) 시사지표 (Bar)
+    def _draw_sisa_bar(metric_list):
+        def _get_metric_mean(df, m_list):
+            if df.empty: return {m: 0 for m in m_list}
+            sub = df[df["metric"].isin(m_list)].copy()
+            sub["val"] = pd.to_numeric(sub["value"], errors="coerce")
+            grp = sub.groupby("metric")["val"].mean()
+            return grp.to_dict()
 
-    z = []
-    for rr in ROW_LABELS:
-        row_z = []
-        for cc in COL_LABELS:
-            row_z.append((ABS_SCORE[rr] + SLO_SCORE[cc]) / 2.0)
-        z.append(row_z)
+        val_target = _get_metric_mean(df_target, metric_list)
+        val_group  = _get_metric_mean(df_group,  metric_list)
+        val_prev   = _get_metric_mean(df_prev,   metric_list)
 
-    fig = px.imshow(
-        z, x=COL_LABELS, y=ROW_LABELS, origin="upper",
-        color_continuous_scale="Blues", range_color=[1, 5],
-        text_auto=False, aspect="auto"
-    ).update_traces(xgap=0.0, ygap=0.0)
+        data = []
+        for m in metric_list:
+            display_name = SISA_MAP.get(m, m)
+            data.append({"지표": display_name, "구분": group_label, "값": val_group.get(m, 0), "color": C_GROUP})
+            data.append({"지표": display_name, "구분": prev_label,  "값": val_prev.get(m, 0),   "color": C_PREV})
+            data.append({"지표": display_name, "구분": global_ip,    "값": val_target.get(m, 0), "color": C_TARGET})
+        
+        plot_df = pd.DataFrame(data)
+        
+        # [수정] 박스(.kpi-card) 제거: div 태그 삭제
+        st.markdown("###### 📊 시사지표 상세")
 
-    fig.update_xaxes(showticklabels=False, title=None, ticks="")
-    fig.update_yaxes(showticklabels=False, title=None, ticks="")
-    fig.update_layout(height=760, margin=dict(l=2, r=2, t=2, b=2), coloraxis_showscale=False)
-    fig.update_traces(hovertemplate="<extra></extra>")
+        if plot_df["값"].sum() == 0:
+            st.info("시사지표 데이터가 없습니다.")
+            return
 
-    def _font_color(val: float) -> str:
-        return "#FFFFFF" if val >= 3.3 else "#111111"
-
-    for r_idx, rr in enumerate(ROW_LABELS):
-        for c_idx, cc in enumerate(COL_LABELS):
-            cell_val = z[r_idx][c_idx]
-            names = pos_map[(rr, cc)]
-            color = _font_color(cell_val)
-
-            fig.add_annotation(
-                x=cc, y=rr, xref="x", yref="y",
-                text=f"<b style='letter-spacing:0.5px'>{rr}{cc}</b>",
-                showarrow=False, font=dict(size=22, color=color, family="sans-serif"),
-                xanchor="center", yanchor="top",
-                xshift=0, yshift=80, align="left"
-            )
-            if names:
-                fig.add_annotation(
-                    x=cc, y=rr, xref="x", yref="y",
-                    text=f"<span style='line-height:1.04'>{'<br>'.join(names)}</span>",
-                    showarrow=False, font=dict(size=12, color=color, family="sans-serif"),
-                    xanchor="center", yanchor="middle",
-                    yshift=6
-                )
-
-    c_posmap_d, = st.columns(1)
-    with c_posmap_d:
+        fig = px.bar(
+            plot_df, x="지표", y="값", color="구분", barmode="group",
+            color_discrete_map={global_ip: C_TARGET, prev_label: C_PREV, group_label: C_GROUP},
+            text="값"
+        )
+        fig.update_traces(
+            texttemplate='%{text:.1f}', textposition='outside', width=0.25,
+            hovertemplate='%{x}<br>%{data.name}: %{y:.1f}<extra></extra>'
+        )
+        fig.update_layout(
+            height=320, margin=dict(t=20, b=10, l=10, r=10),
+            xaxis_title=None, yaxis_title=None,
+            
+            # [수정] 배경 완전 투명화
+            paper_bgcolor='rgba(0,0,0,0)',
+            plot_bgcolor='rgba(0,0,0,0)',
+            
+            yaxis=dict(range=[0, 5.5], fixedrange=True, showgrid=True, gridcolor='#f0f0f0'),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, title=None)
+        )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-    # ---------- [전체표] ----------
-    table = base[[
-        "IP","종합_절대등급","종합_상승등급","종합등급",
-        "조회수_종합","화제성_종합"
-    ]].copy()
+    # (B) 트렌드 차트 (Line)
+    def _fmt_view_detail(x):
+        if pd.isna(x) or x == 0: return "0"
+        v = int(x)
+        uk = v // 100000000
+        rem = v % 100000000
+        man = rem // 10000
+        cheon = (rem % 10000) // 1000
+        res = ""
+        if uk > 0: res += f"{uk}억"
+        if man > 0: res += f"{man:04d}만"
+        if cheon > 0: res += f"{cheon:04d}천"
+        if res == "": return f"{v}"
+        return res
 
-    table["_abs_key"]   = table["종합_절대등급"].map(ABS_SCORE).fillna(0)
-    table["_slope_key"] = table["종합_상승등급"].map(SLO_SCORE).fillna(0)
-    table = table.sort_values(["_abs_key","_slope_key","IP"], ascending=[False, False, True])
+    def _draw_trend_line_chart(metric_name, title, target_weeks):
+        def _fetch_trend_data(df_src, m_name):
+            if df_src.empty: return pd.Series(dtype=float)
+            if m_name == "조회수":
+                sub = _get_view_data(df_src)
+            else:
+                sub = df_src[df_src["metric"] == m_name].copy()
 
-    table_view = table[[
-        "IP","종합등급","조회수_종합","화제성_종합"
-    ]].rename(columns={
-        "종합등급":"종합",
-        "조회수_종합":"조회수",
-        "화제성_종합":"화제성",
-    })
+            if "주차" in sub.columns:
+                sub = sub[sub["주차"].isin(target_weeks)]
+            
+            sub["val"] = pd.to_numeric(sub["value"], errors="coerce")
+            ip_weekly_sum = sub.groupby(["IP", "주차"])["val"].sum().reset_index()
+            grp = ip_weekly_sum.groupby("주차")["val"].mean()
+            
+            sorter = {k: v for v, k in enumerate(target_weeks)}
+            return grp.sort_index(key=lambda x: x.map(sorter))
 
-    grade_cell = JsCode("""
-    function(params){
-      try{
-        const raw = params.value;
-        if (raw === null || raw === undefined) {
-          return {'text-align':'center'};
+        s_target = _fetch_trend_data(df_target, metric_name)
+        s_group  = _fetch_trend_data(df_group,  metric_name)
+        s_prev   = _fetch_trend_data(df_prev,   metric_name)
+
+        if s_target.empty and s_group.empty and s_prev.empty:
+            st.info(f"{title} 데이터 없음")
+            return
+
+        fig = go.Figure()
+
+        if metric_name == "조회수":
+            custom_target = [_fmt_view_detail(v) for v in s_target.values]
+            custom_group  = [_fmt_view_detail(v) for v in s_group.values]
+            custom_prev   = [_fmt_view_detail(v) for v in s_prev.values]
+            hover_template = "%{x}<br>%{data.name}: %{customdata}<extra></extra>"
+        elif metric_name == "언급량":
+            custom_target, custom_group, custom_prev = None, None, None
+            hover_template = "%{x}<br>%{data.name}: %{y:,.0f}<extra></extra>"
+        else:
+            custom_target, custom_group, custom_prev = None, None, None
+            hover_template = "%{x}<br>%{data.name}: %{y:.1f}<extra></extra>"
+
+        fig.add_trace(go.Scatter(
+            x=s_group.index, y=s_group.values, mode='lines',
+            name=group_label, 
+            line=dict(color=C_GROUP, width=2),
+            hovertemplate=hover_template, customdata=custom_group
+        ))
+        
+        fig.add_trace(go.Scatter(
+            x=s_prev.index, y=s_prev.values, mode='lines+markers',
+            name=prev_label, 
+            line=dict(color=C_PREV, width=2, dash='dot'),
+            marker=dict(size=6),
+            hovertemplate=hover_template, customdata=custom_prev
+        ))
+
+        if metric_name == "조회수":
+            text_vals = [f"{int(v/10000)}만" if v > 10000 else f"{int(v)}" for v in s_target.values]
+        elif metric_name == "언급량":
+            text_vals = [f"{v:,.0f}" for v in s_target.values]
+        else:
+            text_vals = [f"{v:.1f}" for v in s_target.values]
+
+        fig.add_trace(go.Scatter(
+            x=s_target.index, y=s_target.values, mode='lines+markers+text',
+            name=global_ip, 
+            line=dict(color=C_TARGET, width=3),
+            marker=dict(size=8, color=C_TARGET),
+            text=text_vals, textposition="top center",
+            textfont=dict(size=12, color=C_TARGET, weight="bold"),
+            hovertemplate=hover_template, customdata=custom_target
+        ))
+
+        fig.update_layout(
+            title=dict(text=f"📈 {title}", font=dict(size=15)),
+            height=280, margin=dict(t=40, b=20, l=10, r=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            xaxis=dict(categoryorder="array", categoryarray=target_weeks, showgrid=False),
+            yaxis=dict(showgrid=True, gridcolor='#f0f0f0', zeroline=False, showticklabels=False),
+            plot_bgcolor='rgba(0,0,0,0)',
+            hovermode="x unified"
+        )
+        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    # --- 7. 화면 배치 ---
+    _draw_sisa_bar(METRICS_SISA)
+    
+    st.markdown("---")
+    
+    st.markdown("###### 🧠 MPI 추이")
+    c_m1, c_m2, c_m3 = st.columns(3)
+    with c_m1: _draw_trend_line_chart("MPI_인지", "인지도", WEEKS_MPI)
+    with c_m2: _draw_trend_line_chart("MPI_선호", "선호도", WEEKS_MPI)
+    with c_m3: _draw_trend_line_chart("MPI_시청의향", "시청의향", WEEKS_MPI)
+
+    st.markdown("---")
+
+    st.markdown("###### 💻 사전 디지털 반응 (W-6 ~ W-1)")
+    c_d1, c_d2 = st.columns(2)
+    with c_d1: _draw_trend_line_chart("조회수", "조회수 합계", WEEKS_DIGITAL)
+    with c_d2: _draw_trend_line_chart("언급량", "언급량 합계", WEEKS_DIGITAL)
+
+
+
+    # --- 7-1. 🔮 W+1 화제성점수 예측 (MVP) ---
+    # 목표: 사용자에게는 '예측값 1개 + 간단한 근거 + (방영작) 예측 vs 실제'만 보여줌
+    # 입력은 사전지표(W-6~W-1)만 사용하며, 데이터가 누적되면 자동으로 재학습됨.
+
+    def _safe_num(s: pd.Series) -> pd.Series:
+        return pd.to_numeric(s, errors="coerce").fillna(0)
+
+    def _parse_date_any(x):
+        try:
+            if pd.isna(x):
+                return pd.NaT
+            s = str(x).strip()
+            if not s:
+                return pd.NaT
+            # allow 'YYYY. M. D' or 'YYYY-MM-DD'
+            s = s.replace(".", "-").replace("/", "-")
+            return pd.to_datetime(s, errors="coerce")
+        except Exception:
+            return pd.NaT
+
+    def build_prelaunch_model_frame(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str], str]:
+        """IP 단위 학습 프레임 생성.
+        - X: 시사지표(항목별), MPI 3종(다주차 요약), 사전 디지털(조회/언급: 다주차 요약)
+        - y: W+1 화제성 점수(F_Score)
+        """
+
+        # ---- Meta(편성/연도/방영시작 등) IP 단위로 모으기 ----
+        meta_cols = [c for c in ["편성", "편성연도", "방영시작"] if c in df.columns]
+        meta = df.groupby("IP")[meta_cols].first() if meta_cols else pd.DataFrame(index=sorted(df["IP"].unique()))
+        if "방영시작" in meta.columns:
+            meta["방영시작_dt"] = meta["방영시작"].apply(_parse_date_any)
+
+        # ---- (1) 시사지표: 항목별 평균 ----
+        sisa_keys = list(SISA_MAP.keys())
+        s_sub = df[df["metric"].isin(sisa_keys)].copy()
+        if not s_sub.empty:
+            s_sub["val"] = _safe_num(s_sub["value"])
+            sisa_wide = s_sub.pivot_table(index="IP", columns="metric", values="val", aggfunc="mean")
+        else:
+            sisa_wide = pd.DataFrame(index=meta.index, columns=sisa_keys).fillna(0)
+
+        # ---- (2) MPI 3종: 주차별 -> 요약 피처 ----
+        # [중요] 일부 IP는 W-3까지만 존재하는 등 주차가 덜 채워진 경우가 있음.
+        # 이때 '존재하는 주차만' 평균/기울기를 내면 과대평가될 수 있으므로,
+        # 항상 W-6~W-1의 고정 6주 프레임으로 맞춘 뒤(누락=0) 요약 피처를 만든다.
+        mpi_metrics = ["MPI_인지", "MPI_선호", "MPI_시청의향"]
+        mpi_weeks = ["W-6", "W-5", "W-4", "W-3", "W-2", "W-1"]
+
+        mpi_sub = df[(df["metric"].isin(mpi_metrics)) & (df["주차"].isin(mpi_weeks))].copy()
+        mpi_wide_all = pd.DataFrame(index=meta.index)
+
+        if not mpi_sub.empty:
+            mpi_sub["val"] = pd.to_numeric(mpi_sub["value"], errors="coerce")
+            mpi_pv = mpi_sub.pivot_table(index="IP", columns=["metric", "주차"], values="val", aggfunc="mean")
+
+            for m in mpi_metrics:
+                # 고정 6주 컬럼 프레임 생성 (누락=0)
+                fixed_cols = [f"{m}_{w}" for w in mpi_weeks]
+                tmp = pd.DataFrame(index=meta.index, columns=fixed_cols, dtype=float).fillna(0.0)
+
+                # 존재하는 주차만 채우기
+                for w in mpi_weeks:
+                    key = (m, w)
+                    if key in mpi_pv.columns:
+                        tmp[f"{m}_{w}"] = mpi_pv[key].reindex(meta.index).fillna(0.0)
+
+                # level (W-1)
+                mpi_wide_all[f"{m}_level_W-1"] = tmp[f"{m}_W-1"]
+
+                # mean level (W-6~W-1)  ※ 항상 6주 평균
+                mpi_wide_all[f"{m}_mean_W-6_W-1"] = tmp.mean(axis=1)
+
+                # momentum: W-1 - W-3 (누락=0 처리 후 계산)
+                mpi_wide_all[f"{m}_mom_W-1_minus_W-3"] = tmp[f"{m}_W-1"] - tmp[f"{m}_W-3"]
+
+                # slope across fixed weeks (W-6~W-1)
+                vals = tmp.values  # shape: (n_ip, 6)
+                x = np.arange(vals.shape[1], dtype=float)  # 0..5
+                x_mean = x.mean()
+                denom = ((x - x_mean) ** 2).sum()
+                slope = ((vals * (x - x_mean)).sum(axis=1) / denom) if denom != 0 else np.zeros(vals.shape[0])
+                mpi_wide_all[f"{m}_slope_W-6_W-1"] = slope
+
+        mpi_wide_all = mpi_wide_all.fillna(0)
+
+        # ---- (3) 사전 디지털: 조회수/언급량 주차별 -> 요약 ----
+        dig_weeks = ["W-6", "W-5", "W-4", "W-3", "W-2", "W-1"]
+
+        v_sub = _get_view_data(df)
+        v_sub = v_sub[v_sub["주차"].isin(dig_weeks)].copy() if not v_sub.empty else pd.DataFrame()
+        if not v_sub.empty:
+            v_sub["val"] = _safe_num(v_sub["value"])
+            v_pv = v_sub.pivot_table(index="IP", columns="주차", values="val", aggfunc="sum").reindex(meta.index).fillna(0)
+        else:
+            v_pv = pd.DataFrame(index=meta.index, columns=dig_weeks).fillna(0)
+
+        b_sub = df[(df["metric"] == "언급량") & (df["주차"].isin(dig_weeks))].copy()
+        if not b_sub.empty:
+            b_sub["val"] = _safe_num(b_sub["value"])
+            b_pv = b_sub.pivot_table(index="IP", columns="주차", values="val", aggfunc="sum").reindex(meta.index).fillna(0)
+        else:
+            b_pv = pd.DataFrame(index=meta.index, columns=dig_weeks).fillna(0)
+
+        dig_feats = pd.DataFrame(index=meta.index)
+
+        # 원본 카운트(조회/언급)는 스케일이 매우 크고 롱테일이어서 과대예측을 유발하기 쉬움.
+        # → 모델 입력은 log1p 변환 및 모멘텀의 signed-log 변환 중심으로 구성한다.
+        view_sum = v_pv.sum(axis=1)
+        buzz_sum = b_pv.sum(axis=1)
+        view_w1 = v_pv.get("W-1", 0)
+        buzz_w1 = b_pv.get("W-1", 0)
+        view_mom = v_pv.get("W-1", 0) - v_pv.get("W-3", 0)
+        buzz_mom = b_pv.get("W-1", 0) - b_pv.get("W-3", 0)
+
+        dig_feats["log1p_조회수_sum_W-6_W-1"] = np.log1p(view_sum.clip(lower=0))
+        dig_feats["log1p_언급량_sum_W-6_W-1"] = np.log1p(buzz_sum.clip(lower=0))
+        dig_feats["log1p_조회수_level_W-1"]   = np.log1p(pd.Series(view_w1, index=meta.index).clip(lower=0))
+        dig_feats["log1p_언급량_level_W-1"]   = np.log1p(pd.Series(buzz_w1, index=meta.index).clip(lower=0))
+
+        # 모멘텀은 음수도 가능하므로 signed-log1p로 변환
+        dig_feats["slog_조회수_mom_W-1_minus_W-3"] = np.sign(view_mom) * np.log1p(np.abs(view_mom))
+        dig_feats["slog_언급량_mom_W-1_minus_W-3"] = np.sign(buzz_mom) * np.log1p(np.abs(buzz_mom))
+
+        # 데이터 커버리지(주차가 덜 쌓인 IP에 대한 과대추정 완화용)
+        # 0이 '실제로 0'일 수도 있지만, 사전 구간에서 완전 0이 반복되면 정보가 부족한 케이스가 많아 보정에 도움이 됨.
+        dig_feats["조회수_week_coverage_W-6_W-1"] = (v_pv.fillna(0) > 0).mean(axis=1)
+        dig_feats["언급량_week_coverage_W-6_W-1"] = (b_pv.fillna(0) > 0).mean(axis=1)
+
+        # ---- (4) 타깃: 1주차 화제성 점수(F_Score) ----
+        target_metric = "F_Score"
+        # 데이터에 따라 1주차 표기가 W+1 또는 W1일 수 있어 자동 감지
+        week_candidates = ["W+1", "W1", "W+01", "1주차", "1"]
+        weeks_avail = set(df["주차"].astype(str).unique())
+        target_week = next((w for w in week_candidates if w in weeks_avail), "W+1")
+
+        y_sub = df[(df["metric"] == target_metric) & (df["주차"] == target_week)].copy()
+        if not y_sub.empty:
+            y_sub["y"] = pd.to_numeric(y_sub["value"], errors="coerce")
+            y = y_sub.groupby("IP")["y"].mean().reindex(meta.index)
+        else:
+            y = pd.Series(index=meta.index, dtype=float)
+
+        X = pd.concat([sisa_wide.reindex(meta.index).fillna(0), mpi_wide_all, dig_feats], axis=1).fillna(0)
+        frame = X.copy()
+        frame[f"y_{target_week}_화제성"] = y
+
+        if not meta.empty:
+            for c in meta.columns:
+                frame[c] = meta[c]
+            if "방영시작_dt" in meta.columns:
+                frame["방영시작_dt"] = meta["방영시작_dt"]
+
+        feature_cols = list(X.columns)
+        return frame.reset_index().rename(columns={"index": "IP"}), feature_cols, f"y_{target_week}_화제성", target_week
+
+    def fit_and_predict_mvp(frame: pd.DataFrame, feature_cols: list[str], target_col: str, target_ip: str):
+        """예측(운영 단순화: ALL-TRAIN)
+
+        - 학습: 타깃(예: F_Score, W1)이 존재하는 모든 IP를 사용해 1회 학습
+        - 검증표: (참고용) 동일 데이터 기준 예측 vs 실제를 전 IP에 대해 표시
+        - 신규 IP: target_ip에 대해 예측값과 간단한 기여도(선형 계수 기반)를 제공
+        """
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.linear_model import Ridge
+        from sklearn.metrics import mean_absolute_error
+
+        # --- counts for UI ---
+        total_ip_cnt = int(frame["IP"].nunique()) if "IP" in frame.columns else 0
+        # labelled rows (have target)
+        trainable = frame[pd.to_numeric(frame[target_col], errors="coerce").notna()].copy()
+        trainable[target_col] = pd.to_numeric(trainable[target_col], errors="coerce")
+        trainable = trainable.dropna(subset=[target_col])
+
+        target_ip_cnt = int(trainable["IP"].nunique()) if "IP" in trainable.columns else int(trainable.shape[0])
+        feature_any_cnt = int(frame[feature_cols].notna().any(axis=1).sum()) if len(feature_cols) > 0 else 0
+
+        # minimum guard (too few supervised labels)
+        if trainable.shape[0] < 12:
+            meta = {
+                "total_ip_cnt": total_ip_cnt,
+                "target_ip_cnt": target_ip_cnt,
+                "feature_ready_cnt": feature_any_cnt,
+                "trainable_rows": int(trainable.shape[0]),
+                "note": "insufficient_labels",
+            }
+            return None, None, None, None, None, meta
+
+        # ----- Fit once on ALL labelled data -----
+        model = Pipeline([
+            ("scaler", StandardScaler(with_mean=True, with_std=True)),
+            ("ridge", Ridge(alpha=1.0, random_state=42)),
+        ])
+
+        X_all = trainable[feature_cols].replace([np.inf, -np.inf], 0).fillna(0)
+        y_all_raw = trainable[target_col].values
+        # 타깃도 롱테일이어서 log1p로 학습 후 expm1로 복원(과대예측 완화)
+        y_all = np.log1p(np.clip(y_all_raw, a_min=0, a_max=None))
+        model.fit(X_all, y_all)
+
+        # ----- In-sample validation table (reference only) -----
+        all_df = trainable.copy()
+        all_df["_pred_log"] = model.predict(X_all)
+        y_p05, y_p95 = np.percentile(y_all_raw, [5, 95])
+        all_df["_pred"] = np.expm1(all_df["_pred_log"]).clip(lower=0)
+        all_df["_pred"] = all_df["_pred"].clip(lower=y_p05, upper=y_p95)
+
+        mae = float(mean_absolute_error(all_df[target_col].values, all_df["_pred"].values))
+
+        # ----- Predict for the selected IP (can be pre-launch without label) -----
+        pred_ip_val = None
+        contrib_df = None
+        group_contrib_df = None
+
+        row_ip = frame[frame["IP"] == target_ip].copy()
+        if not row_ip.empty:
+            x_ip = row_ip[feature_cols].replace([np.inf, -np.inf], 0).fillna(0)
+
+            try:
+                pred_ip_val_log = float(model.predict(x_ip)[0])
+                pred_ip_val = float(np.expm1(pred_ip_val_log))
+                # 예측값 클리핑(학습 데이터 분포 기준) - 극단 과대예측 방지
+                y_p05, y_p95 = np.percentile(y_all_raw, [5, 95])
+                pred_ip_val = float(np.clip(pred_ip_val, y_p05, y_p95))
+                # 주차 커버리지(데이터 누락) 보정: W-3까지만 존재 등 커버리지가 낮으면 중앙값 쪽으로 수축
+                try:
+                    cov_cols = [c for c in x_ip.columns if "week_coverage" in c]
+                    cov = float(min([float(x_ip.iloc[0][c]) for c in cov_cols])) if cov_cols else 1.0
+                    if cov < 0.75:
+                        y_med = float(np.median(y_all_raw))
+                        pred_ip_val = float(0.7 * pred_ip_val + 0.3 * y_med)
+                except Exception:
+                    pass
+            except Exception:
+                pred_ip_val = None
+
+            # contributions (linear, scaled)
+            try:
+                scaler = model.named_steps["scaler"]
+                ridge = model.named_steps["ridge"]
+
+                def _grp(feat: str) -> str:
+                    """변수를 4개 그룹(사전 디지털/언급, 시사지표, MPI, 보정)으로 강제 분류"""
+                    f = str(feat)
+                    if f.startswith("시사지표_"):
+                        return "시사지표"
+                    if f.startswith("MPI_"):
+                        return "MPI"
+                    # 사전 디지털/언급: 조회/언급 + 파생(log1p_/slog_)
+                    if f.startswith("log1p_") or f.startswith("slog_"):
+                        return "사전 디지털/언급"
+                    if ("조회" in f) or ("조회수" in f) or ("언급" in f) or ("언급량" in f):
+                        return "사전 디지털/언급"
+                    return "보정"
+
+                def _pretty_name(feat: str) -> str:
+                    """개발자틱 변수명을 사용자 친화 라벨로 변환(표시용)"""
+                    f = str(feat)
+
+                    # --- 시사지표 ---
+                    if f.startswith("시사지표_"):
+                        return f"시사: {f.replace('시사지표_', '')}"
+
+                    # --- MPI ---
+                    if f.startswith("MPI_"):
+                        s = f.replace("MPI_", "")
+                        parts = s.split("_")
+                        mpi_kind = parts[0] if parts else s
+                        label_map = {"level": "수준", "mean": "평균", "mom": "최근변화", "slope": "추세"}
+                        feat_type = None
+                        for k in ["level", "mean", "mom", "slope"]:
+                            if k in parts:
+                                feat_type = k
+                                break
+
+                        week_txt = ""
+                        if "W-6" in f and "W-1" in f and ("sum" in f or "mean" in f or "slope" in f):
+                            week_txt = "(W-6~W-1)"
+                        if "W-1_minus_W-3" in f:
+                            week_txt = "(W-1 - W-3)"
+                        elif "_W-1" in f:
+                            week_txt = "(W-1)"
+
+                        ft = label_map.get(feat_type, "지표")
+                        return f"MPI {mpi_kind}: {ft} {week_txt}".strip()
+
+                    # --- 보정(커버리지 등) ---
+                    if "week_coverage" in f:
+                        base = f.replace("_week_coverage_", " 주차커버리지 ")
+                        base = base.replace("_W-6_W-1", " (W-6~W-1)")
+                        base = base.replace("_", " ")
+                        return f"보정: {base}"
+
+                    # --- 사전 디지털/언급 ---
+                    def _pretty_common(s: str) -> str:
+                        s = s.replace("_W-6_W-1", " (W-6~W-1)")
+                        s = s.replace("_W-1_minus_W-3", " (W-1 - W-3)")
+                        s = s.replace("_W-1", " (W-1)")
+                        s = s.replace("_", " ")
+                        s = s.replace("sum", "총량").replace("level", "마지막값").replace("mom", "최근변화").replace("slope", "추세").replace("minus", "-")
+                        return s
+
+                    if f.startswith("log1p_"):
+                        return f"사전: {_pretty_common(f.replace('log1p_', ''))}"
+                    if f.startswith("slog_"):
+                        s = f.replace("slog_", "")
+                        s = _pretty_common(s).replace("총량", "총량").replace("마지막값", "마지막값")
+                        return f"사전: {s}"
+
+                    if ("조회" in f) or ("조회수" in f) or ("언급" in f) or ("언급량" in f):
+                        return f"사전: {_pretty_common(f)}"
+
+                    return f
+
+                x_scaled = scaler.transform(x_ip.values)[0]
+                coefs = ridge.coef_
+                contrib_vals = coefs * x_scaled
+
+                contrib_df = pd.DataFrame({"feature": feature_cols, "contribution": contrib_vals})
+                contrib_df["group"] = contrib_df["feature"].apply(_grp)
+                contrib_df["pretty"] = contrib_df["feature"].apply(_pretty_name)
+
+                # sort by absolute contribution (for display)
+                contrib_df["_abs"] = contrib_df["contribution"].abs()
+                contrib_df = contrib_df.sort_values("_abs", ascending=False).drop(columns=["_abs"])
+
+                group_contrib_df = (
+                    contrib_df.groupby("group")["contribution"]
+                    .sum()
+                    .reset_index()
+                    .assign(_abs=lambda d: d["contribution"].abs())
+                    .sort_values("_abs", ascending=False)
+                    .drop(columns=["_abs"])
+                )
+            except Exception:
+                contrib_df = None
+                group_contrib_df = None
+
+
+        meta = {
+            "total_ip_cnt": total_ip_cnt,
+            "target_ip_cnt": target_ip_cnt,
+            "feature_ready_cnt": feature_any_cnt,
+            "trainable_rows": int(trainable.shape[0]),
+            "note": "ok_alltrain",
         }
-        const v = String(raw);
-        let bg=null, color=null, fw='700';
-        if (/^[SABCD]/.test(v)) {
-          if (v.startsWith('S')) { bg='rgba(0,91,187,0.14)'; color='#003d80'; }
-          else if (v.startsWith('A')) { bg='rgba(0,91,187,0.08)'; color='#004a99'; }
-          else if (v.startsWith('B')) { bg='rgba(0,0,0,0.03)'; color='#333'; fw='600'; }
-          else if (v.startsWith('C')) { bg='rgba(42,97,204,0.08)'; color:'#2a61cc'; }
-          else if (v.startsWith('D')) { bg='rgba(42,97,204,0.14)'; color:'#1a44a3'; }
-          return {'background-color':bg,'color':color,'font-weight':fw,'text-align':'center'};
-        }
-        return {'text-align':'center'};
-      } catch (e) {
-        return {'text-align':'center'};
-      }
-    }""")
 
-    gb = GridOptionsBuilder.from_dataframe(table_view.fillna("–"))
-    gb.configure_default_column(resizable=True, sortable=True, filter=False,
-                                headerClass='centered-header bold-header',
-                                cellStyle={'textAlign':'center'})
-    gb.configure_column("IP", pinned='left', cellStyle={'textAlign':'left','fontWeight':'700'})
-    for colname in ["종합","조회수","화제성"]:
-        gb.configure_column(colname, cellStyle=grade_cell, width=120)
+        return all_df, mae, pred_ip_val, contrib_df, group_contrib_df, meta
+
+
+    # =====================================================
+    # 🔮 W+1(=1주차) 화제성점수 예측 — 컷오프별 멀티모델(W-3/W-2/W-1)
+    #   - 타깃은 항상 동일: W+1(=1주차) 화제성(F_Score)
+    #   - 입력은 가용한 사전 데이터의 마지막 주차(컷오프)에 맞춰 3개 모델을 별도 학습
+    #   - 신규 IP는 보유한 최신 주차에 맞는 모델을 자동 선택
+    # =====================================================
+
+    # --- sklearn (runtime dependency) ---
+    try:
+        from sklearn.pipeline import Pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.linear_model import Ridge
+    except Exception as _e:
+        raise ModuleNotFoundError(
+            "scikit-learn is required for the multi-model predictor. "
+            "Add 'scikit-learn' to requirements.txt and redeploy."
+        ) from _e
+
+    WEEK_ORDER = ["W-6", "W-5", "W-4", "W-3", "W-2", "W-1"]
+
+    def _week_leq(week: str, cutoff: str) -> bool:
+        if week not in WEEK_ORDER:
+            return False
+        return WEEK_ORDER.index(week) <= WEEK_ORDER.index(cutoff)
+
+    def _detect_target_week(_df: pd.DataFrame) -> str:
+        cand = ["W+1", "W1", "W 1", "W+01"]
+        w = set(_df.loc[_df.get("metric") == "F_Score", "주차"].dropna().astype(str))
+        for c in cand:
+            if c in w:
+                return c
+        if len(w) == 0:
+            return "W+1"
+        return sorted(list(w))[-1]
+
+    target_week = _detect_target_week(df_all)
+
+    def _safe_num(s: pd.Series) -> pd.Series:
+        return pd.to_numeric(s, errors="coerce").fillna(0)
+
+    def _calc_slope(vals: list[float]) -> float:
+        if vals is None or len(vals) < 2:
+            return 0.0
+        return (float(vals[-1]) - float(vals[0])) / float(len(vals) - 1)
+
+    def _build_features_for_cutoff(_df: pd.DataFrame, cutoff: str) -> tuple[pd.DataFrame, list[str], str]:
+        # 1) cutoff 주차까지만 사용
+        sub = _df[_df["주차"].astype(str).apply(lambda w: _week_leq(str(w), cutoff))].copy()
+
+        # 2) 타깃(y): 항상 W+1(=1주차) 화제성(F_Score)
+        y_sub = _df[(_df.get("metric") == "F_Score") & (_df.get("주차").astype(str) == str(target_week))].copy()
+        y_sub["y"] = pd.to_numeric(y_sub.get("value"), errors="coerce")
+        y_ip = y_sub.groupby("IP")["y"].mean()
+
+        # 3) 시사지표(항목별)
+        sisa_keys = list(SISA_MAP.keys()) if "SISA_MAP" in globals() else []
+        sisa = _df[_df.get("metric").isin(sisa_keys)].copy() if sisa_keys else pd.DataFrame(columns=["IP","metric","value"])
+        if not sisa.empty:
+            sisa["v"] = pd.to_numeric(sisa.get("value"), errors="coerce").fillna(0)
+            sisa_wide = sisa.pivot_table(index="IP", columns="metric", values="v", aggfunc="mean").reset_index()
+        else:
+            sisa_wide = pd.DataFrame({"IP": _df["IP"].dropna().unique()})
+
+        # 4) 시계열 지표: (조회수/언급량/MPI 3종) → level/sum/mean/mom/slope
+        ts_metrics = ["언급량", "MPI_인지", "MPI_선호", "MPI_시청의향"]
+
+        frames = []
+
+        # 조회수: 기존 대시보드 helper가 있으면 활용
+        if "_get_view_data" in globals():
+            try:
+                v = _get_view_data(_df).copy()
+                v = v[v["주차"].astype(str).apply(lambda w: _week_leq(str(w), cutoff))]
+                v["val"] = pd.to_numeric(v.get("value"), errors="coerce").fillna(0)
+                v["metric"] = "조회수"
+                frames.append(v[["IP","주차","metric","val"]])
+            except Exception:
+                pass
+
+        for m in ts_metrics:
+            tmp = sub[sub.get("metric") == m].copy()
+            if tmp.empty:
+                continue
+            tmp["val"] = pd.to_numeric(tmp.get("value"), errors="coerce").fillna(0)
+            frames.append(tmp[["IP","주차","metric","val"]])
+
+        ts = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["IP","주차","metric","val"])
+
+        feat_rows = []
+        for ip, g in ts.groupby("IP"):
+            row = {"IP": ip}
+            for m, gm in g.groupby("metric"):
+                wm = gm.set_index(gm["주차"].astype(str))["val"].to_dict()
+                vals = [float(wm.get(w, 0.0)) for w in WEEK_ORDER if _week_leq(w, cutoff)]
+                if len(vals) == 0:
+                    continue
+                last = vals[-1]
+                first = vals[0]
+                mean = float(sum(vals) / len(vals))
+                sm = float(sum(vals))
+                ref = vals[-3] if len(vals) >= 3 else first
+                mom = float(last - ref)
+                slope = _calc_slope(vals)
+
+                if m in ["조회수", "언급량"]:
+                    row[f"사전:{m}_총량(log)"] = float(np.log1p(sm))
+                    row[f"사전:{m}_수준({cutoff},log)"] = float(np.log1p(last))
+                    row[f"사전:{m}_최근변화({cutoff},log)"] = float(np.sign(mom) * np.log1p(abs(mom)))
+                    row[f"사전:{m}_추세({cutoff})"] = float(slope)
+                else:
+                    row[f"{m}_총량"] = float(sm)
+                    row[f"{m}_수준({cutoff})"] = float(last)
+                    row[f"{m}_최근변화({cutoff})"] = float(mom)
+                    row[f"{m}_추세({cutoff})"] = float(slope)
+            feat_rows.append(row)
+
+        feat_df = pd.DataFrame(feat_rows) if feat_rows else pd.DataFrame(columns=["IP"])
+
+        merged = sisa_wide.merge(feat_df, on="IP", how="left").fillna(0)
+        merged["__y"] = merged["IP"].map(y_ip)
+        target_col = "__y"
+        feature_cols = [c for c in merged.columns if c not in ["IP", target_col]]
+        return merged, feature_cols, target_col
+
+    def _fit_predict_one(frame_df: pd.DataFrame, feature_cols: list[str], target_col: str, ip_pick: str | None):
+        d = frame_df.copy()
+        y = pd.to_numeric(d[target_col], errors="coerce")
+        d = d[y.notna()].copy()
+        y = pd.to_numeric(d[target_col], errors="coerce")
+
+        if d.shape[0] < 12:
+            return None, None, float("nan"), None
+
+        X = d[feature_cols].apply(_safe_num)
+        y_log = np.log1p(y.clip(lower=0))
+
+        pipe = Pipeline([
+            ("scaler", StandardScaler(with_mean=True, with_std=True)),
+            ("ridge", Ridge(alpha=10.0, random_state=42)),
+        ])
+        pipe.fit(X, y_log)
+
+        pred = np.maximum(np.expm1(pipe.predict(X)), 0.0)
+
+        yv = y.to_numpy(dtype=float)
+        pe = np.where((yv != 0) & np.isfinite(yv), np.abs(pred - yv) / np.abs(yv) * 100.0, np.nan)
+        mape = float(np.nanmean(pe)) if np.isfinite(pe).any() else float("nan")
+
+        out = d[["IP", target_col]].copy()
+        out["_pred"] = pred
+
+        pred_ip = None
+        if ip_pick is not None:
+            r = frame_df[frame_df["IP"] == ip_pick]
+            if not r.empty:
+                Xp = r[feature_cols].apply(_safe_num)
+                pred_ip = float(np.maximum(np.expm1(pipe.predict(Xp)[0]), 0.0))
+        return out, pred_ip, mape, pipe
+
+    # --- train 3 models ---
+    preds = {}
+    mapes = {}
+    for cutoff in ["W-3", "W-2", "W-1"]:
+        fr, feat_cols, tcol = _build_features_for_cutoff(df_all, cutoff=cutoff)
+        p_df, p_ip, mape, _model = _fit_predict_one(fr, feat_cols, tcol, ip_pick=global_ip)
+        preds[cutoff] = {"df": p_df, "ip": p_ip}
+        mapes[cutoff] = mape
+
+    def _has_week(ip: str, w: str) -> bool:
+        try:
+            if "주차" not in df_all.columns:
+                return False
+
+            def _norm_week_label(s):
+                s = str(s)
+                return s.replace("+", "").replace("주차", "").strip()
+
+            # 해당 IP의 해당 주차 레코드 필터링
+            week_norm = df_all["주차"].astype(str).map(_norm_week_label)
+            sub = df_all[(df_all["IP"] == ip) & (week_norm == _norm_week_label(w))].copy()
+
+            # 🔑 핵심 사전지표 3종: 조회수 / 언급량 / MPI(인지·선호·시청의향)
+            # 하나라도 없으면 해당 주차는 '충분한 데이터 없음'으로 간주
+            has_buzz = not sub[sub.get("metric") == "언급량"].empty
+
+            mpi_metrics = ["MPI_인지", "MPI_선호", "MPI_시청의향"]
+            has_mpi = not sub[sub.get("metric").isin(mpi_metrics)].empty
+
+            has_view = False
+            if "_get_view_data" in globals():
+                v = _get_view_data(df_all)
+                if "주차" in v.columns:
+                    v_week_norm = v["주차"].astype(str).map(_norm_week_label)
+                    v_sub = v[(v["IP"] == ip) & (v_week_norm == _norm_week_label(w))]
+                    has_view = not v_sub.empty
+
+            return has_view and has_buzz and has_mpi
+        except Exception:
+            return False
+
+    chosen = None
+    if _has_week(global_ip, "W-1"):
+        chosen = "W-1"
+    elif _has_week(global_ip, "W-2"):
+        chosen = "W-2"
+    elif _has_week(global_ip, "W-3"):
+        chosen = "W-3"
+
+    # actual value
+    actual_val = None
+    try:
+        def _norm_week_label_for_actual(s):
+            s = str(s)
+            return s.replace("+", "").replace("주차", "").strip()
+
+        if "주차" in df_all.columns:
+            week_norm_all = df_all["주차"].astype(str).map(_norm_week_label_for_actual)
+            target_week_norm = _norm_week_label_for_actual(target_week)
+
+            _a = df_all[
+                (df_all.get("metric") == "F_Score") &
+                (week_norm_all == target_week_norm) &
+                (df_all.get("IP") == global_ip)
+            ].copy()
+        else:
+            _a = pd.DataFrame()
+
+        if not _a.empty:
+            _a["__v"] = pd.to_numeric(_a.get("value"), errors="coerce")
+            if _a["__v"].notna().any():
+                actual_val = float(_a["__v"].dropna().iloc[-1])
+    except Exception:
+        actual_val = None
+
+    st.markdown(f"###### 🔮 1주차({target_week}) 화제성점수 예측")
+
+    if chosen is None:
+        st.info("현재 사전 데이터가 부족해 예측할 수 없습니다. (최소 W-3 데이터 필요)")
+    elif preds.get(chosen, {}).get("ip") is None:
+        st.info(f"예측 모델을 만들기 위한 방영작 학습 데이터가 충분하지 않습니다. ({target_week} 화제성 데이터가 더 필요합니다)")
+    else:
+        pred_val = float(preds[chosen]["ip"])
+        mape_val = mapes.get(chosen, float("nan"))
+        mape_text = f"{mape_val:.1f}%" if np.isfinite(mape_val) else "-"
+
+        st.markdown(f"""
+        <div class="kpi-card" style="padding:16px 14px;">
+            <div class="kpi-title">시사지표/MPI 3종/디지털 2종 데이터의 절대값과 기울기를 바탕으로 추정됩니다</div>
+            <div class="kpi-value" style="font-size:34px; margin-top:6px;">{pred_val:,.0f}</div>
+            <div style="color:#111827; font-size:13px; margin-top:8px;">
+                실제 화제성점수 ({target_week}): <b>{(f"{actual_val:,.0f}" if actual_val is not None else "방영전입니다")}</b>
+            </div>
+            <div style="color:#6b7280; font-size:12.5px; margin-top:6px; line-height:1.35;">
+                <b>적용 모델:</b> {chosen} 기반 · <b>평균오차율:</b> {mape_text}<br/>
+                (데이터가 누적되면(예: W-2 → W-1) 더 많은 정보를 반영한 모델로 자동 전환됩니다.)
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+        
+    # ===== [추가] Expander(아코디언) 테두리 및 배경 투명화 CSS =====
+    st.markdown("""
+    <style>
+    /* Expander 컨테이너 테두리/배경/그림자 제거 */
+    div[data-testid="stExpander"] details {
+        border: none !important;
+        background: transparent !important;
+        box-shadow: none !important;
+    }
+    /* 클릭하는 텍스트 영역(Summary) 여백 제거 및 투명화 */
+    div[data-testid="stExpander"] summary {
+        padding: 0px !important;
+        background: transparent !important;
+    }
+    /* 마우스 호버 시 회색 배경이 생기는 기본 효과 제거 (글자색만 살짝 파랗게) */
+    div[data-testid="stExpander"] summary:hover {
+        background: transparent !important;
+        color: #0b61ff !important; 
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    with st.expander("✅ 예측 정확도(방영작 검증)", expanded=False):
+        if "주차" not in df_all.columns:
+            st.info("검증용 데이터에 '주차' 컬럼이 없어 예측 정확도를 계산할 수 없습니다.")
+        else:
+            def _norm_week_label(s):
+                s = str(s)
+                return s.replace("+", "").replace("주차", "").strip()
+
+            week_norm = df_all["주차"].astype(str).map(_norm_week_label)
+            target_week_norm = _norm_week_label(target_week)
+
+            y_all = df_all[
+                (df_all.get("metric") == "F_Score") &
+                (week_norm == target_week_norm)
+            ].copy()
+            y_all["y"] = pd.to_numeric(y_all.get("value"), errors="coerce")
+            y_ip = y_all.groupby("IP")["y"].mean().dropna()
+            if y_ip.empty:
+                st.info("검증용 데이터가 없습니다.")
+            else:
+                acc = pd.DataFrame({"IP": y_ip.index, "실제_num": y_ip.values})
+
+                # --- [추가] 실제 주차 F_Total 순위 매핑 ---
+                rank_all = df_all[
+                    (df_all.get("metric") == "F_Total") &
+                    (week_norm == target_week_norm)
+                ].copy()
+                rank_all["rank_val"] = pd.to_numeric(rank_all.get("value"), errors="coerce")
+                rank_map = rank_all.groupby("IP")["rank_val"].min()
+                acc["순위"] = acc["IP"].map(rank_map)
+
+                def _attach_pred(colname: str, cutoff: str):
+                    pdf = preds.get(cutoff, {}).get("df")
+                    if pdf is None or pdf.empty:
+                        acc[colname] = np.nan
+                        return
+                    m = pdf.set_index("IP")["_pred"]
+                    acc[colname] = acc["IP"].map(m)
+
+                _attach_pred("W-3기반예측", "W-3")
+                _attach_pred("W-2기반예측", "W-2")
+                _attach_pred("W-1기반예측(최종)", "W-1")
+
+                # ===== [수정 4] 오차율 방향(+/-) 표기를 위해 분자 부분의 abs() 제거 =====
+                def _err_pct(p, a):
+                    if pd.isna(p) or pd.isna(a) or a == 0:
+                        return np.nan
+                    return (p - a) / abs(a) * 100.0
+
+                acc["오차"] = np.nan  # placeholder
+
+                acc["오차(W-3)"] = [ _err_pct(p,a) for p,a in zip(acc["W-3기반예측"], acc["실제_num"]) ]
+                acc["오차(W-2)"] = [ _err_pct(p,a) for p,a in zip(acc["W-2기반예측"], acc["실제_num"]) ]
+                acc["오차(W-1)"] = [ _err_pct(p,a) for p,a in zip(acc["W-1기반예측(최종)"], acc["실제_num"]) ]
+
+                for c in ["W-3기반예측","W-2기반예측","W-1기반예측(최종)","실제_num"]:
+                    acc[c] = pd.to_numeric(acc[c], errors="coerce").round(0)
+
+                # [수정] 실제값은 숫자 정렬 가능하도록 유지하고, 표시용 정보는 fractional 인코딩
+                # 표시 포맷에서만 "점수 (N위)"로 렌더링됨
+                _rank_fill = pd.to_numeric(acc["순위"], errors="coerce").fillna(9999)
+                acc["실제"] = acc["실제_num"] + (_rank_fill / 1_000_000.0)
+
+                # ===== [수정 3] 예측값과 오차율을 결합하여 직관적인 텍스트 생성 =====
+                def _combine_pred_err(pred, err):
+                    if pd.isna(pred): return "-"
+                    p_str = f"{int(pred):,}"
+                    if pd.isna(err): return p_str
+                    sign = "+" if err > 0 else ""
+                    return f"{p_str} ({sign}{err:.1f}%)"
+
+                acc["W-1 예측(오차)"] = [ _combine_pred_err(p, e) for p, e in zip(acc["W-1기반예측(최종)"], acc["오차(W-1)"]) ]
+                acc["W-2 예측(오차)"] = [ _combine_pred_err(p, e) for p, e in zip(acc["W-2기반예측"], acc["오차(W-2)"]) ]
+                acc["W-3 예측(오차)"] = [ _combine_pred_err(p, e) for p, e in zip(acc["W-3기반예측"], acc["오차(W-3)"]) ]
+
+                # [추가] 현재 선택 IP의 예상점수와 실제점수 기준으로 가장 유사한 IP 5개 하이라이트 후보
+                similar_ip_set = set()
+                try:
+                    current_pred_score = None
+                    _chosen_key = chosen if ("chosen" in locals() and chosen is not None) else "W-1"
+                    _pred_bundle = preds.get(_chosen_key, {}) if isinstance(preds, dict) else {}
+                    _pred_ip_val = _pred_bundle.get("ip")
+                    if _pred_ip_val is not None and pd.notna(_pred_ip_val):
+                        current_pred_score = float(_pred_ip_val)
+                    if current_pred_score is not None:
+                        _sim = acc[["IP", "실제_num"]].copy()
+                        _sim["실제_num"] = pd.to_numeric(_sim["실제_num"], errors="coerce")
+                        _sim = _sim.dropna(subset=["실제_num"])
+                        _sim = _sim[_sim["IP"] != global_ip]
+                        if not _sim.empty:
+                            _sim["__diff"] = (_sim["실제_num"] - current_pred_score).abs()
+                            similar_ip_set = set(
+                                _sim.sort_values(["__diff", "실제_num"], ascending=[True, False])["IP"].head(5).tolist()
+                            )
+                except Exception:
+                    similar_ip_set = set()
+
+                # ===== [수정 2] W-1이 가장 먼저 오도록 컬럼 순서 재배치 =====
+                grid = acc[["IP", "실제", "W-1 예측(오차)", "W-2 예측(오차)", "W-3 예측(오차)"]].copy()
+
+                # Formatter: 실제값 숫자 포맷팅 (현재 미사용, 기존 구조 유지)
+                fmt_int = JsCode("""
+                    function(params){
+                        if (params.value === null || params.value === undefined || params.value === '' || isNaN(params.value)) return '-';
+                        return Math.round(params.value).toLocaleString();
+                    }
+                """)
+                right_align = JsCode("""function(params){ return {'textAlign':'right'}; }""")
+                actual_style = JsCode("""function(params){ return {'backgroundColor':'#FFF2CC','fontWeight':'700','textAlign':'right'}; }""")
+
+                # ===== [플랜 B] AgGrid 버그 우회를 위한 Streamlit 네이티브 데이터프레임 렌더링 =====
+                # 1. JSON 직렬화 에러를 방지하기 위해 무한대 값 및 결측치 안전 처리
+                grid = grid.replace([np.inf, -np.inf], np.nan).fillna("-")
+
+                # 2. Pandas Styler를 이용한 표 디자인 함수 정의
+                def apply_grid_styles(row):
+                    # 기본적으로 빈 스타일 배열 생성
+                    styles = [''] * len(row)
+
+                    is_global = (row["IP"] == global_ip)
+                    is_similar = (row["IP"] in similar_ip_set)
+
+                    # 현재 선택된 IP 행 하이라이트 (최우선)
+                    if is_global:
+                        styles = ['background-color: #fffde7; font-weight: 700; color: #d93636;'] * len(row)
+                    # 선택 IP 예측점수와 실제값이 유사한 IP 하이라이트 (보조 강조)
+                    elif is_similar:
+                        styles = ['background-color: #fff5f5; color: #c62828; font-weight: 600;'] * len(row)
+
+                    # '실제' 컬럼(인덱스 1)은 구분을 위해 항상 배경색 적용
+                    # 유사행은 연노랑 대신 연붉은색 계열로 유지하여 하이라이트가 보이게 처리
+                    if is_similar and not is_global:
+                        styles[1] = styles[1] + ' background-color: #ffe3e3; font-weight: 700; color: #b71c1c;'
+                    else:
+                        styles[1] = styles[1] + ' background-color: #FFF2CC; font-weight: 700;'
+
+                    return styles
+
+                # 3. 데이터프레임에 스타일 및 포맷팅 적용
+                styled_grid = (
+                    grid.style
+                    .apply(apply_grid_styles, axis=1)
+                    .format({
+                        "실제": lambda x: (
+                            "-"
+                            if (x is None or (isinstance(x, float) and pd.isna(x)))
+                            else (
+                                (lambda _score, _rank: f"{_score:,}" if _rank >= 9999 else f"{_score:,} ({_rank}위)")(
+                                    int(float(x)),
+                                    int(round((float(x) - int(float(x))) * 1_000_000))
+                                )
+                            )
+                        )
+                    })
+                )
+
+                # 4. Streamlit 네이티브 함수로 렌더링 (expander 버그 면역)
+                st.dataframe(
+                    styled_grid,
+                    use_container_width=True, # 열 너비 꽉 차게 맞춤
+                    hide_index=True,          # 불필요한 인덱스 번호 숨김
+                    height=400                # 적절한 높이 지정
+                )
+    st.divider()
+
+    # --- 8. [최종 수정] 전체 IP 사전지표 종합 테이블 (AgGrid) ---
+    st.markdown("#### 📋 전체 IP 사전지표 종합 현황")
+    
+    # 1) 데이터 집계 함수
+    def calculate_pre_performance(df):
+        all_unique_ips = df["IP"].unique()
+        if len(all_unique_ips) == 0: return pd.DataFrame(), []
+
+        # (1) 디지털 합계
+        target_weeks_dig = ["W-6", "W-5", "W-4", "W-3", "W-2", "W-1"]
+        
+        v_sub = _get_view_data(df)
+        v_sub = v_sub[v_sub["주차"].isin(target_weeks_dig)]
+        v_sub["val"] = pd.to_numeric(v_sub["value"], errors="coerce").fillna(0)
+        view_sum = v_sub.groupby("IP")["val"].sum()
+
+        b_sub = df[(df["metric"] == "언급량") & (df["주차"].isin(target_weeks_dig))].copy()
+        b_sub["val"] = pd.to_numeric(b_sub["value"], errors="coerce").fillna(0)
+        buzz_sum = b_sub.groupby("IP")["val"].sum()
+
+        # (2) 시사지표 합산
+        sisa_keys = list(SISA_MAP.keys())
+        s_sub = df[df["metric"].isin(sisa_keys)].copy()
+        s_sub["val"] = pd.to_numeric(s_sub["value"], errors="coerce").fillna(0)
+        sisa_total = s_sub.groupby("IP")["val"].sum()
+
+        # (3) MPI 인지도 주차별 (Pivot)
+        m_sub = df[df["metric"] == "MPI_인지"].copy()
+        m_sub["val"] = pd.to_numeric(m_sub["value"], errors="coerce")
+        
+        mpi_pivot = m_sub.pivot_table(index="IP", columns="주차", values="val", aggfunc="mean")
+        
+        desired_mpi_weeks = ["W-6", "W-5", "W-4", "W-3", "W-2", "W-1", "W+1", "W+2"]
+        available_cols = [c for c in desired_mpi_weeks if c in mpi_pivot.columns]
+        mpi_pivot = mpi_pivot[available_cols] 
+        
+        # [중요] 데이터프레임 컬럼명을 'MPI인지도_W-n' 형식으로 생성
+        mpi_pivot.columns = [f"MPI인지도_{c}" for c in mpi_pivot.columns]
+
+        # 4) 전체 병합
+        base_df = pd.DataFrame({
+            "시사합계": sisa_total,
+            "사전조회수": view_sum,
+            "사전언급량": buzz_sum
+        })
+        
+        merged = base_df.join(mpi_pivot, how="outer").reindex(all_unique_ips).fillna(0)
+        mpi_cols = list(mpi_pivot.columns)
+        
+        return merged.reset_index().rename(columns={"index": "IP"}), mpi_cols
+
+    # 2) 테이블 데이터 생성
+    df_pre_perf, mpi_columns = calculate_pre_performance(df_all)
+
+    # 3) AgGrid 설정
+    fmt_thousands = JsCode("""function(params){ if(params.value==null||isNaN(params.value))return '-'; return Math.round(params.value).toLocaleString(); }""")
+    fmt_fixed1 = JsCode("""function(params){ if(params.value==null||isNaN(params.value)||params.value==0)return '-'; return Number(params.value).toFixed(1); }""")
+
+    highlight_jscode = JsCode(f"""
+    function(params) {{
+        if (params.data.IP === '{global_ip}') {{
+            return {{
+                'background-color': '#fffde7',
+                'font-weight': 'bold',
+                'border-left': '5px solid #d93636'
+            }};
+        }}
+        return {{}};
+    }}
+    """)
+
+    gb = GridOptionsBuilder.from_dataframe(df_pre_perf)
+    gb.configure_default_column(
+        sortable=True, resizable=True, filter=False,
+        cellStyle={'textAlign': 'center'},
+        headerClass='centered-header'
+    )
+    gb.configure_grid_options(
+        rowHeight=34, 
+        suppressMenuHide=True, 
+        domLayout='normal',
+        getRowStyle=highlight_jscode 
+    )
+    
+    # [그룹핑 컬럼 정의]
+    custom_defs = [
+        { "headerName": "IP", "field": "IP", "pinned": "left", "width": 140, "cellStyle": {'textAlign': 'left'} },
+        { "headerName": "시사지표(합)", "field": "시사합계", "valueFormatter": fmt_fixed1, "width": 90 },
+        { "headerName": "사전 조회수", "field": "사전조회수", "valueFormatter": fmt_thousands, "width": 100 },
+        { "headerName": "사전 언급량", "field": "사전언급량", "valueFormatter": fmt_thousands, "width": 100 }
+    ]
+
+    # MPI 그룹 생성 (children)
+    mpi_children = []
+    for col in mpi_columns:
+        # [핵심 수정] 데이터 컬럼명(MPI인지도_W-6)에서 접두사를 제거하여 헤더명(W-6) 생성
+        clean_header = col.replace("MPI인지도_", "")
+        
+        mpi_children.append({
+            "headerName": clean_header, 
+            "field": col,
+            "valueFormatter": fmt_fixed1,
+            "width": 60, 
+            "cellStyle": {'textAlign': 'center'}
+        })
+
+    if mpi_children:
+        custom_defs.append({
+            "headerName": "MPI 인지도", # 상위 그룹 헤더
+            "children": mpi_children,   # 하위 컬럼들 (W-6, W-5...)
+            "headerClass": "centered-header"
+        })
+
     grid_options = gb.build()
+    grid_options['columnDefs'] = custom_defs
 
-    st.markdown("#### 📋 IP전체-디지털")
     AgGrid(
-        table_view.fillna("–"),
+        df_pre_perf,
         gridOptions=grid_options,
         theme="streamlit",
-        height=420,
-        fit_columns_on_grid_load=True,
+        height=400,
+        fit_columns_on_grid_load=True, 
         update_mode=GridUpdateMode.NO_UPDATE,
         allow_unsafe_jscode=True
     )
+    
+# =====================================================
+#endregion
 #endregion
 
-
-#region [ 12. 메인 라우터 ]
-# =====================================================
-# [수정] 삭제된 페이지(데모그래픽, 회차별) 라우팅 제거
+#region [ 7. 라우터 / 엔트리 ]
 if st.session_state["page"] == "Overview":
     render_overview() # [ 7. 페이지 1 ]
 elif st.session_state["page"] == "IP 성과":
     render_ip_detail() # [ 8. 페이지 2 ]
+elif st.session_state["page"] == "사전지표": 
+    render_pre_launch_analysis()
 elif st.session_state["page"] == "비교분석":
-    render_comparison() # [ 10. 페이지 4 (통합됨) ]
-elif st.session_state["page"] == "성장스코어-방영지표":
-    render_growth_score() # [ 12. 페이지 6 ]
-elif st.session_state["page"] == "성장스코어-디지털":
-    render_growth_score_digital() # [ 13. 페이지 7 ]
+    render_comparison() # [ 10. 페이지 4 ]
+elif st.session_state["page"] == "성장스코어":
+    render_growth_score() # [ 10. 페이지 5 (통합됨) ]
 else:
     render_overview() # 기본값으로 Overview 렌더링
-    
-#endregion
+    #endregion
