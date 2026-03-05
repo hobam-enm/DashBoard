@@ -1734,24 +1734,64 @@ def render_ip_detail():
     val_topic_min = _min_of_ip_metric(f, "F_Total")
     val_topic_avg = _mean_like_rating(f, "F_score")
 
-    base_T = mean_of_ip_episode_mean(base, "T시청률")
-    base_H = mean_of_ip_episode_mean(base, "H시청률")
-    base_live = mean_of_ip_episode_sum(base, "시청인구", ["TVING LIVE"])
-    base_quick = mean_of_ip_episode_sum(base, "시청인구", ["TVING QUICK"])
-    base_vod = mean_of_ip_episode_sum(base, "시청인구", ["TVING VOD"])
+    # --- [신규] 지표별 컷오프 기반 베이스 슬라이싱 ---
+    def _base_slice_for_metric(base_raw: pd.DataFrame, f: pd.DataFrame, metric_name: str, cutoff_kind: str = "episode", media=None) -> pd.DataFrame:
+        """선택 IP(f)의 '해당 지표' 데이터가 존재하는 구간까지만 base_raw를 잘라 비교 공정성을 맞춘다.
+        cutoff_kind:
+          - "episode": 회차_num 기준 컷
+          - "week": 주차_num 기준 컷 (없으면 회차_num로 fallback)
+
+        NOTE:
+        - metric_name == "조회수" 는 _get_view_data()로 표준화해서 컷오프를 산출한다.
+        - 슬라이싱은 base_raw(비교군 필터 완료본)에 적용한다.
+        """
+        if metric_name == "조회수":
+            sub_ip = _get_view_data(f)
+        else:
+            sub_ip = f[f["metric"] == metric_name].copy()
+
+        if media is not None and "매체" in sub_ip.columns:
+            sub_ip = sub_ip[sub_ip["매체"].isin(media)]
+
+        cut_ep = None
+        cut_week = None
+
+        if cutoff_kind == "week" and "주차_num" in sub_ip.columns and sub_ip["주차_num"].notna().any():
+            cut_week = sub_ip["주차_num"].max()
+
+        if "회차_num" in sub_ip.columns and sub_ip["회차_num"].notna().any():
+            cut_ep = sub_ip["회차_num"].max()
+
+        out = base_raw.copy()
+
+        # base 슬라이싱 (우선 week, 그 다음 episode)
+        if cutoff_kind == "week" and cut_week is not None and "주차_num" in out.columns:
+            return out[out["주차_num"] <= cut_week].copy()
+
+        if cut_ep is not None and "회차_num" in out.columns:
+            return out[out["회차_num"] <= cut_ep].copy()
+
+        return out
+
+    # --- Base values (지표별 컷오프 슬라이싱 적용) ---
+    base_T = mean_of_ip_episode_mean(_base_slice_for_metric(base_raw, f, "T시청률", "episode"), "T시청률")
+    base_H = mean_of_ip_episode_mean(_base_slice_for_metric(base_raw, f, "H시청률", "episode"), "H시청률")
+    base_live = mean_of_ip_episode_sum(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ["TVING LIVE"])
+    base_quick = mean_of_ip_episode_sum(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ["TVING QUICK"])
+    base_vod = mean_of_ip_episode_sum(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ["TVING VOD"])
 
     # [신규] Wavve VOD Base
-    base_wavve = mean_of_ip_episode_sum(base, "시청자수", ["웨이브"])
+    base_wavve = mean_of_ip_episode_sum(_base_slice_for_metric(base_raw, f, "시청자수", "episode"), "시청자수", ["웨이브"])
 
     # [신규] Netflix Base
-    base_netflix_series = _series_ip_metric(base, "N_W순위", mode="min")
+    base_netflix_series = _series_ip_metric(_base_slice_for_metric(base_raw, f, "N_W순위", "week"), "N_W순위", mode="min")
     base_netflix_best = float(base_netflix_series.mean()) if not base_netflix_series.empty else None
-    base_buzz = mean_of_ip_sums(base, "언급량")
-    base_view = mean_of_ip_sums(base, "조회수")
-    base_topic_min_series = _series_ip_metric(base, "F_Total", mode="min")
-    base_topic_min = float(base_topic_min_series.mean()) if not base_topic_min_series.empty else None
-    base_topic_avg = _mean_like_rating(base, "F_score")
 
+    base_buzz = mean_of_ip_sums(_base_slice_for_metric(base_raw, f, "언급량", "week"), "언급량")
+    base_view = mean_of_ip_sums(_base_slice_for_metric(base_raw, f, "조회수", "week"), "조회수")
+    base_topic_min_series = _series_ip_metric(_base_slice_for_metric(base_raw, f, "F_Total", "week"), "F_Total", mode="min")
+    base_topic_min = float(base_topic_min_series.mean()) if not base_topic_min_series.empty else None
+    base_topic_avg = _mean_like_rating(_base_slice_for_metric(base_raw, f, "F_score", "week"), "F_score")
     # --- Ranking ---
     def _rank_within_program(base_df, metric_name, ip_name, value, mode="mean", media=None, low_is_good=False):
         s = _series_ip_metric(base_df, metric_name, mode=mode, media=media)
@@ -1761,21 +1801,21 @@ def render_ip_detail():
         ranks = s.rank(method="min", ascending=low_is_good)
         return (int(ranks.loc[ip_name]), int(s.shape[0]))
 
-    rk_T     = _rank_within_program(base, "T시청률", ip_selected, val_T,   mode="mean",        media=None)
-    rk_H     = _rank_within_program(base, "H시청률", ip_selected, val_H,   mode="mean",        media=None)
-    rk_live  = _rank_within_program(base, "시청인구", ip_selected, val_live,  mode="ep_sum_mean", media=["TVING LIVE"])
-    rk_quick = _rank_within_program(base, "시청인구", ip_selected, val_quick, mode="ep_sum_mean", media=["TVING QUICK"])
-    rk_vod   = _rank_within_program(base, "시청인구", ip_selected, val_vod,   mode="ep_sum_mean", media=["TVING VOD"])
+    rk_T     = _rank_within_program(_base_slice_for_metric(base_raw, f, "T시청률", "episode"), "T시청률", ip_selected, val_T,   mode="mean",        media=None)
+    rk_H     = _rank_within_program(_base_slice_for_metric(base_raw, f, "H시청률", "episode"), "H시청률", ip_selected, val_H,   mode="mean",        media=None)
+    rk_live  = _rank_within_program(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ip_selected, val_live,  mode="ep_sum_mean", media=["TVING LIVE"])
+    rk_quick = _rank_within_program(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ip_selected, val_quick, mode="ep_sum_mean", media=["TVING QUICK"])
+    rk_vod   = _rank_within_program(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ip_selected, val_vod,   mode="ep_sum_mean", media=["TVING VOD"])
 
     # [신규] Wavve Rank
-    rk_wavve = _rank_within_program(base, "시청자수", ip_selected, val_wavve, mode="ep_sum_mean", media=["웨이브"])
+    rk_wavve = _rank_within_program(_base_slice_for_metric(base_raw, f, "시청자수", "episode"), "시청자수", ip_selected, val_wavve, mode="ep_sum_mean", media=["웨이브"])
 
     # [신규] Netflix Rank
-    rk_netflix = _rank_within_program(base, "N_W순위", ip_selected, val_netflix_best, mode="min", media=None, low_is_good=True)
-    rk_buzz  = _rank_within_program(base, "언급량",   ip_selected, val_buzz,  mode="sum",        media=None)
-    rk_view  = _rank_within_program(base, "조회수",   ip_selected, val_view,  mode="sum",        media=None)
-    rk_fmin  = _rank_within_program(base, "F_Total",  ip_selected, val_topic_min, mode="min",   media=None, low_is_good=True)
-    rk_fscr  = _rank_within_program(base, "F_score",  ip_selected, val_topic_avg, mode="mean",  media=None, low_is_good=False)
+    rk_netflix = _rank_within_program(_base_slice_for_metric(base_raw, f, "N_W순위", "week"), "N_W순위", ip_selected, val_netflix_best, mode="min", media=None, low_is_good=True)
+    rk_buzz  = _rank_within_program(_base_slice_for_metric(base_raw, f, "언급량", "week"), "언급량",   ip_selected, val_buzz,  mode="sum",        media=None)
+    rk_view  = _rank_within_program(_base_slice_for_metric(base_raw, f, "조회수", "week"), "조회수",   ip_selected, val_view,  mode="sum",        media=None)
+    rk_fmin  = _rank_within_program(_base_slice_for_metric(base_raw, f, "F_Total", "week"), "F_Total",  ip_selected, val_topic_min, mode="min",   media=None, low_is_good=True)
+    rk_fscr  = _rank_within_program(_base_slice_for_metric(base_raw, f, "F_score", "week"), "F_score",  ip_selected, val_topic_avg, mode="mean",  media=None, low_is_good=False)
 
     # --- KPI Render Helpers ---
     def _pct_color(val, base_val):
@@ -1783,12 +1823,51 @@ def render_ip_detail():
         pct = (val / base_val) * 100
         return "#d93636" if pct > 100 else ("#2a61cc" if pct < 100 else "#444")
 
-    def sublines_html(prog_label: str, rank_tuple: tuple, val, base_val):
+    def _cutoff_label_for_metric(f: pd.DataFrame, metric_name: str, cutoff_kind: str = "episode", media: List[str] | None = None) -> str | None:
+        """선택 IP(f) 기준으로 컷오프 라벨 생성
+        - week   : ~W+N
+        - episode: ~N화
+        """
+        if f is None or f.empty:
+            return None
+
+        if metric_name == "조회수":
+            sub = _get_view_data(f)
+        else:
+            sub = f[f["metric"] == metric_name].copy()
+
+        if media is not None and "매체" in sub.columns:
+            sub = sub[sub["매체"].isin(media)]
+
+        if sub.empty:
+            return None
+
+        if cutoff_kind == "week":
+            if "주차_num" in sub.columns and sub["주차_num"].notna().any():
+                cut_week = sub["주차_num"].max()
+                if pd.notna(cut_week):
+                    return f"~W+{int(cut_week)}"
+            # fallback -> episode
+            if "회차_num" in sub.columns and sub["회차_num"].notna().any():
+                cut_ep = sub["회차_num"].max()
+                if pd.notna(cut_ep):
+                    return f"~{int(cut_ep)}화"
+            return None
+
+        # episode
+        if "회차_num" in sub.columns and sub["회차_num"].notna().any():
+            cut_ep = sub["회차_num"].max()
+            if pd.notna(cut_ep):
+                return f"~{int(cut_ep)}화"
+        return None
+
+    def sublines_html(prog_label: str, rank_tuple: tuple, val, base_val, cutoff_label: str | None = None):
         rnk, total = rank_tuple if rank_tuple else (None, 0)
-        
+
         if rnk is not None and total > 0:
             prefix = "👑 " if rnk == 1 else ""
-            rank_label = f"{prefix}{rnk}위<span style='font-size:11px;font-weight:400;color:#9ca3af;margin-left:2px'>(총{total}개)</span>"
+            cutoff_txt = f"/{cutoff_label}" if cutoff_label else ""
+            rank_label = f"{prefix}{rnk}위<span style='font-size:13px;font-weight:400;color:#9ca3af;margin-left:2px'>(총{total}개{cutoff_txt})</span>"
         else:
             rank_label = "–위"
 
@@ -1798,6 +1877,7 @@ def render_ip_detail():
                 pct = (float(val) / float(base_val)) * 100.0
                 pct_txt = f"{pct:.0f}%"; col = _pct_color(val, base_val)
         except Exception: pass
+
         return (
             "<div class='kpi-subwrap'>"
             "<span class='kpi-sublabel'>그룹 內</span> "
@@ -1815,13 +1895,521 @@ def render_ip_detail():
           "</div>"
         )
 
-    def kpi_with_rank(col, title, value, base_val, rank_tuple, prog_label, intlike=False, digits=3, value_suffix=""):
+    def kpi_with_rank(col, title, value, base_val, rank_tuple, prog_label, intlike=False, digits=3, value_suffix="", cutoff_label: str | None = None):
         with col:
             main_val = fmt(value, digits=digits, intlike=intlike)
             st.markdown(
                 f"<div class='kpi-card'><div class='kpi-title'>{title}</div>"
                 f"<div class='kpi-value'>{main_val}{value_suffix}</div>"
-                f"{sublines_html(prog_label, rank_tuple, value, base_val)}</div>",
+                f"{sublines_html(prog_label, rank_tuple, value, base_val, cutoff_label=cutoff_label)}</div>",
+                unsafe_allow_html=True
+            )
+
+    # === KPI 배치 (Row 1) ===
+    # 컷오프 라벨(선택 IP 기준)
+    cut_T     = _cutoff_label_for_metric(f, "T시청률", "episode")
+    cut_H     = _cutoff_label_for_metric(f, "H시청률", "episode")
+    cut_live  = _cutoff_label_for_metric(f, "시청인구", "episode", media=["TVING LIVE"])
+    cut_quick = _cutoff_label_for_metric(f, "시청인구", "episode", media=["TVING QUICK"])
+    cut_vod   = _cutoff_label_for_metric(f, "시청인구", "episode", media=["TVING VOD"])
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    kpi_with_rank(c1, "🎯 타깃시청률",    val_T, base_T, rk_T, prog_label, digits=3, cutoff_label=cut_T)
+    kpi_with_rank(c2, "🏠 가구시청률",    val_H, base_H, rk_H, prog_label, digits=3, cutoff_label=cut_H)
+    kpi_with_rank(c3, "📺 티빙 LIVE UV",     val_live, base_live, rk_live, prog_label, intlike=True, cutoff_label=cut_live)
+    kpi_with_rank(c4, "⚡ 티빙 당일 VOD UV",  val_quick, base_quick, rk_quick, prog_label, intlike=True, cutoff_label=cut_quick)
+    kpi_with_rank(c5, "▶️ 티빙 주간 VOD UV", val_vod, base_vod, rk_vod, prog_label, intlike=True, cutoff_label=cut_vod)
+
+    # === KPI 배치 (Row 2) ===
+    cut_view  = _cutoff_label_for_metric(f, "조회수", "week")
+    cut_buzz  = _cutoff_label_for_metric(f, "언급량", "week")
+    cut_fscr  = _cutoff_label_for_metric(f, "F_score", "week")
+    cut_wavve = _cutoff_label_for_metric(f, "시청자수", "episode", media=["웨이브"])
+
+    c6, c7, c8, c9, c10 = st.columns(5)
+    kpi_with_rank(c6, "👀 디지털 조회수", val_view, base_view, rk_view, prog_label, intlike=True, cutoff_label=cut_view)
+    kpi_with_rank(c7, "💬 디지털 언급량", val_buzz, base_buzz, rk_buzz, prog_label, intlike=True, cutoff_label=cut_buzz)
+    with c8:
+        v = val_topic_min
+        main_val = "–" if (v is None or pd.isna(v)) else f"{int(round(v)):,d}위"
+        st.markdown(
+            f"<div class='kpi-card'><div class='kpi-title'>🏆 최고 화제성 순위</div>"
+            f"<div class='kpi-value'>{main_val}</div>{sublines_dummy()}</div>",
+            unsafe_allow_html=True
+        )
+    kpi_with_rank(c9, "🔥 화제성 점수", val_topic_avg, base_topic_avg, rk_fscr, prog_label, intlike=True, cutoff_label=cut_fscr)
+
+    with c10:
+        if val_wavve is not None and not pd.isna(val_wavve):
+            kpi_with_rank(c10, "🌊 웨이브 VOD UV", val_wavve, base_wavve, rk_wavve, prog_label, intlike=True, cutoff_label=cut_wavve)
+
+        elif val_netflix_best is not None and not pd.isna(val_netflix_best) and val_netflix_best > 0:
+            main_val = f"{int(val_netflix_best)}위"
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>🍿 넷플릭스 최고순위</div>"
+                f"<div class='kpi-value'>{main_val}</div>{sublines_dummy()}</div>",
+                unsafe_allow_html=True
+            )
+        else:
+            # 둘 다 없으면 비워두기
+            st.markdown(
+                f"<div class='kpi-card' style='opacity:0; pointer-events:none;'><div class='kpi-title'>-</div>"
+                f"<div class='kpi-value'>-</div>{sublines_dummy()}</div>",
+                unsafe_allow_html=True
+            )
+
+
+def render_ip_detail():
+    
+    df_full = load_data() # [3. 공통 함수]
+
+    ip_selected = st.session_state.get("global_ip")
+    if not ip_selected or ip_selected not in df_full["IP"].values:
+        st.error("선택된 IP 정보가 없습니다.")
+        return
+
+    filter_cols = st.columns([5, 2, 2])
+
+    with filter_cols[0]:
+        st.markdown(f"<div class='page-title'>📈 {ip_selected} 성과 상세</div>", unsafe_allow_html=True)
+    
+    with st.expander("ℹ️ 지표 기준 안내", expanded=False):
+        st.markdown("<div class='gd-guideline'>", unsafe_allow_html=True)
+        st.markdown(textwrap.dedent("""
+            **지표 기준**
+        - **시청률** `누적 회차평균`: 전국 기준 가구 & 타깃(2049) 시청률
+        - **티빙 LIVE UV** `누적 회차평균`: 실시간 시청 UV
+        - **티빙 당일 VOD UV** `누적 회차평균`: 본방송 당일 VOD UV
+        - **티빙 주간 VOD UV** `누적 회차평균`: [회차 방영일부터 +6일까지의 7일간 VOD UV] - [티빙 당일 VOD]
+        - **디지털 조회** `누적 회차총합`: 방영주간 월~일 발생 총합 / 유튜브,인스타그램,틱톡,네이버TV,페이스북
+        - **디지털 언급량** `누적 회차총합`: 방영주차(월~일) 내 총합 / 커뮤니티,트위터,블로그                            
+        - **화제성 점수** `누적 회차평균`: 방영기간 주차별 화제성 점수의 평균 (펀덱스)
+        """).strip())
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    # --- 데이터 전처리 (Default 설정을 위해 위치 이동) ---
+    date_col_for_filter = "편성연도"
+
+    target_ip_rows = df_full[df_full["IP"] == ip_selected]
+    
+    # Default 연도/편성 추출
+    default_year_list = []
+    sel_prog = None
+    
+    if not target_ip_rows.empty:
+        try:
+            if date_col_for_filter in target_ip_rows.columns:
+                y_mode = target_ip_rows[date_col_for_filter].dropna().mode()
+                if not y_mode.empty:
+                    default_year_list = [y_mode.iloc[0]]
+            
+            sel_prog = target_ip_rows["편성"].dropna().mode().iloc[0]
+        except Exception:
+            pass
+            
+    all_years = []
+    if date_col_for_filter in df_full.columns:
+        unique_vals = df_full[date_col_for_filter].dropna().unique()
+        try:
+            all_years = sorted(unique_vals, reverse=True)
+        except:
+            all_years = sorted([str(x) for x in unique_vals], reverse=True)
+
+    # [Col 1] 방영 연도
+    with filter_cols[1]:
+        selected_years = st.multiselect(
+            "방영 연도",
+            all_years,
+            default=default_year_list,
+            placeholder="방영 연도 선택",
+            label_visibility="collapsed"
+        )
+
+    # [Col 2] 동일 편성 여부 (셀렉트박스)
+    with filter_cols[2]:
+        comp_options = ["동일 편성", "전체", "월화", "수목", "토일", "평일"]
+        default_comp = "평일" if (sel_prog == "수목") else "동일 편성"
+        comp_type = st.selectbox(
+            "편성 기준",
+            comp_options,
+            index=comp_options.index(default_comp),
+            label_visibility="collapsed"
+        )
+
+        use_same_prog = (comp_type == "동일 편성")
+
+        # 비교 그룹 편성 필터(없으면 전체)
+        comp_prog_filter = None
+        if comp_type == "평일":
+            comp_prog_filter = ["월화", "수목"]
+        elif comp_type in ["월화", "수목", "토일"]:
+            comp_prog_filter = [comp_type]
+        elif use_same_prog:
+            comp_prog_filter = [sel_prog] if sel_prog else None
+# --- 선택 IP 데이터 필터링 ---
+    f = target_ip_rows.copy()
+
+    if "회차_numeric" in f.columns:
+        f["회차_num"] = pd.to_numeric(f["회차_numeric"], errors="coerce")
+    else:
+        f["회차_num"] = pd.to_numeric(f["회차"].str.extract(r"(\d+)", expand=False), errors="coerce")
+    
+    my_max_ep = f["회차_num"].max()
+
+    def _week_to_num(x: str):
+        m = re.search(r"-?\d+", str(x))
+        return int(m.group(0)) if m else None
+
+    has_week_col = "주차" in f.columns
+    if has_week_col:
+        f["주차_num"] = f["주차"].apply(_week_to_num)
+
+    # --- 베이스(비교 그룹) 데이터 필터링 ---
+    base_raw = df_full.copy()
+    
+    # [추가] 비교 대상은 본방이 시작된(T시청률 0초과) 작품만 남기기
+    # (단, 현재 선택된 타깃 IP는 방영 전이더라도 기준점이 되므로 예외적으로 포함시킵니다)
+    aired_ips = get_aired_ips(base_raw)
+    base_raw = base_raw[base_raw["IP"].isin(aired_ips) | (base_raw["IP"] == ip_selected)]
+    
+    group_name_parts = []
+
+    # 1. 편성 기준 필터
+    if comp_prog_filter is not None:
+        # '동일 편성'인데 IP 편성 정보가 없으면, 필터를 건너뜀
+        if use_same_prog and not sel_prog:
+            st.warning(f"'{ip_selected}'의 편성 정보가 없어 '동일 편성' 기준은 제외됩니다.", icon="⚠️")
+        else:
+            base_raw = base_raw[base_raw["편성"].isin(comp_prog_filter)]
+
+            if comp_type == "평일":
+                group_name_parts.append("'평일(월화+수목)'")
+            elif comp_type in ["월화", "수목", "토일"]:
+                group_name_parts.append(f"'{comp_type}'")
+            elif use_same_prog and sel_prog:
+                group_name_parts.append(f"'{sel_prog}'")
+
+    # 2. 방영 연도 필터
+    if selected_years:
+        base_raw = base_raw[base_raw[date_col_for_filter].isin(selected_years)]
+        
+        if len(selected_years) <= 3:
+            years_str = ",".join(map(str, sorted(selected_years)))
+            group_name_parts.append(f"{years_str}")
+        else:
+            try:
+                group_name_parts.append(f"{min(selected_years)}~{max(selected_years)}")
+            except:
+                group_name_parts.append("선택연도")
+    else:
+        st.warning("선택된 연도가 없습니다. (전체 연도 데이터와 비교)", icon="⚠️")
+
+    if not group_name_parts:
+        group_name_parts.append("전체")
+    
+    prog_label = " & ".join(group_name_parts) + " 평균"
+
+    # --- (이하 로직 동일) ---
+    if "회차_numeric" in base_raw.columns:
+        base_raw["회차_num"] = pd.to_numeric(base_raw["회차_numeric"], errors="coerce")
+    else:
+        base_raw["회차_num"] = pd.to_numeric(base_raw["회차"].str.extract(r"(\d+)", expand=False), errors="coerce")
+    
+    if pd.notna(my_max_ep):
+        base = base_raw[base_raw["회차_num"] <= my_max_ep].copy()
+    else:
+        base = base_raw.copy()
+
+    st.markdown(
+        f"<div class='sub-title'>📺 {ip_selected} 성과 상세 리포트</div>",
+        unsafe_allow_html=True
+    )
+    st.markdown("---")
+
+    # --- Metric Normalizer & Formatters ---
+    def _normalize_metric(s: str) -> str:
+        if s is None: return ""
+        s2 = re.sub(r"[^A-Za-z0-9가-힣]+", "", str(s)).lower()
+        return s2
+
+    def _metric_filter(df: pd.DataFrame, name: str) -> pd.DataFrame:
+        target = _normalize_metric(name)
+        if "metric_norm" not in df.columns:
+            df = df.copy()
+            df["metric_norm"] = df["metric"].apply(_normalize_metric)
+        return df[df["metric_norm"] == target]
+
+    def fmt_kor(x):
+        if pd.isna(x): return "0"
+        val = float(x)
+        if val == 0: return "0"
+        rounded = int(round(val / 10000)) 
+        if rounded == 0 and val > 0: return f"{val/10000:.1f}만"
+        uk = rounded // 10000; man = rounded % 10000
+        if uk > 0: return f"{uk}억{man:04d}만" if man > 0 else f"{uk}억"
+        return f"{man}만"
+
+    def fmt_live_kor(x):
+        if pd.isna(x): return "0"
+        val = float(x)
+        if val == 0: return "0"
+        man = int(val // 10000); cheon = int((val % 10000) // 1000)
+        if man > 0: return f"{man}만{cheon}천" if cheon > 0 else f"{man}만"
+        return f"{cheon}천" if cheon > 0 else f"{int(val)}"
+
+    def get_axis_ticks(max_val, formatter=fmt_kor):
+        if pd.isna(max_val) or max_val <= 0: return None, None
+        step = max_val / 4
+        power = 10 ** int(np.log10(step))
+        base = step / power
+        if base < 1.5: step = 1 * power
+        elif base < 3.5: step = 2 * power
+        elif base < 7.5: step = 5 * power
+        else: step = 10 * power
+        vals = np.arange(0, max_val + step * 0.1, step)
+        texts = [formatter(v) for v in vals]
+        return vals, texts
+    
+    # --- Aggregation Helpers ---
+    def _series_ip_metric(base_df: pd.DataFrame, metric_name: str, mode: str = "mean", media: List[str] | None = None):
+        if metric_name == "조회수": sub = _get_view_data(base_df)
+        else: sub = _metric_filter(base_df, metric_name).copy()
+        if media is not None: sub = sub[sub["매체"].isin(media)]
+        if sub.empty: return pd.Series(dtype=float)
+
+        # [신규] 넷플릭스 순위 등 '회차' 정보가 없을 수 있는 지표 예외 처리
+        if metric_name == "N_W순위":
+            sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
+            sub = sub.dropna(subset=["value"])
+            if sub.empty: return pd.Series(dtype=float)
+            if mode == "min": s = sub.groupby("IP")["value"].min()
+            elif mode == "mean": s = sub.groupby("IP")["value"].mean()
+            else: s = sub.groupby("IP")["value"].min()
+            return pd.to_numeric(s, errors="coerce").dropna()
+
+        ep_col = _episode_col(sub)
+        sub = sub.dropna(subset=[ep_col])
+        sub["value"] = pd.to_numeric(sub["value"], errors="coerce").replace(0, np.nan)
+        sub = sub.dropna(subset=["value"])
+        if sub.empty: return pd.Series(dtype=float)
+
+        if mode == "mean":
+            ep_mean = sub.groupby(["IP", ep_col], as_index=False)["value"].mean()
+            s = ep_mean.groupby("IP")["value"].mean()
+        elif mode == "sum": s = sub.groupby("IP")["value"].sum()
+        elif mode == "ep_sum_mean":
+            ep_sum = sub.groupby(["IP", ep_col], as_index=False)["value"].sum()
+            s = ep_sum.groupby("IP")["value"].mean()
+        elif mode == "min": s = sub.groupby("IP")["value"].min()
+        else: s = sub.groupby("IP")["value"].mean()
+        return pd.to_numeric(s, errors="coerce").dropna()
+
+    def _min_of_ip_metric(df_src: pd.DataFrame, metric_name: str) -> float | None:
+        sub = _metric_filter(df_src, metric_name).copy()
+        if sub.empty: return None
+        s = pd.to_numeric(sub["value"], errors="coerce").dropna()
+        return float(s.min()) if not s.empty else None
+
+    def _mean_like_rating(df_src: pd.DataFrame, metric_name: str) -> float | None:
+        sub = _metric_filter(df_src, metric_name).copy()
+        if sub.empty: return None
+        sub["val"] = pd.to_numeric(sub["value"], errors="coerce")
+        sub = sub.dropna(subset=["val"])
+        if sub.empty: return None
+        if "회차_num" in sub.columns and sub["회차_num"].notna().any():
+            g = sub.dropna(subset=["회차_num"]).groupby("회차_num", as_index=False)["val"].mean()
+            return float(g["val"].mean())
+        if date_col_for_filter in sub.columns and sub[date_col_for_filter].notna().any():
+            g = sub.dropna(subset=[date_col_for_filter]).groupby(date_col_for_filter, as_index=False)["val"].mean()
+            return float(g["val"].mean())
+        return float(sub["val"].mean())
+
+    # --- KPI Calculation ---
+    val_T = mean_of_ip_episode_mean(f, "T시청률")
+    val_H = mean_of_ip_episode_mean(f, "H시청률")
+    val_live = mean_of_ip_episode_sum(f, "시청인구", ["TVING LIVE"])
+    val_quick = mean_of_ip_episode_sum(f, "시청인구", ["TVING QUICK"]) 
+    val_vod = mean_of_ip_episode_sum(f, "시청인구", ["TVING VOD"])
+
+    # [신규] Wavve VOD (metric="시청자수", media="웨이브")
+    val_wavve = mean_of_ip_episode_sum(f, "시청자수", ["웨이브"])
+
+    # [신규] Netflix Best Rank
+    val_netflix_best = _min_of_ip_metric(f, "N_W순위")
+
+    val_buzz = mean_of_ip_sums(f, "언급량")
+    val_view = mean_of_ip_sums(f, "조회수")
+    val_topic_min = _min_of_ip_metric(f, "F_Total")
+    val_topic_avg = _mean_like_rating(f, "F_score")
+
+    # --- [신규] 지표별 컷오프 기반 베이스 슬라이싱 ---
+    def _base_slice_for_metric(base_raw: pd.DataFrame, f: pd.DataFrame, metric_name: str, cutoff_kind: str = "episode", media=None) -> pd.DataFrame:
+        """선택 IP(f)의 '해당 지표' 데이터가 존재하는 구간까지만 base_raw를 잘라 비교 공정성을 맞춘다.
+        cutoff_kind:
+          - "episode": 회차_num 기준 컷
+          - "week": 주차_num 기준 컷 (없으면 회차_num로 fallback)
+
+        NOTE:
+        - metric_name == "조회수" 는 _get_view_data()로 표준화해서 컷오프를 산출한다.
+        - 슬라이싱은 base_raw(비교군 필터 완료본)에 적용한다.
+        """
+        if metric_name == "조회수":
+            sub_ip = _get_view_data(f)
+        else:
+            sub_ip = f[f["metric"] == metric_name].copy()
+
+        if media is not None and "매체" in sub_ip.columns:
+            sub_ip = sub_ip[sub_ip["매체"].isin(media)]
+
+        cut_ep = None
+        cut_week = None
+
+        if cutoff_kind == "week" and "주차_num" in sub_ip.columns and sub_ip["주차_num"].notna().any():
+            cut_week = sub_ip["주차_num"].max()
+
+        if "회차_num" in sub_ip.columns and sub_ip["회차_num"].notna().any():
+            cut_ep = sub_ip["회차_num"].max()
+
+        out = base_raw.copy()
+
+        # base 슬라이싱 (우선 week, 그 다음 episode)
+        if cutoff_kind == "week" and cut_week is not None and "주차_num" in out.columns:
+            return out[out["주차_num"] <= cut_week].copy()
+
+        if cut_ep is not None and "회차_num" in out.columns:
+            return out[out["회차_num"] <= cut_ep].copy()
+
+        return out
+
+    # --- Base values (지표별 컷오프 슬라이싱 적용) ---
+    base_T = mean_of_ip_episode_mean(_base_slice_for_metric(base_raw, f, "T시청률", "episode"), "T시청률")
+    base_H = mean_of_ip_episode_mean(_base_slice_for_metric(base_raw, f, "H시청률", "episode"), "H시청률")
+    base_live = mean_of_ip_episode_sum(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ["TVING LIVE"])
+    base_quick = mean_of_ip_episode_sum(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ["TVING QUICK"])
+    base_vod = mean_of_ip_episode_sum(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ["TVING VOD"])
+
+    # [신규] Wavve VOD Base
+    base_wavve = mean_of_ip_episode_sum(_base_slice_for_metric(base_raw, f, "시청자수", "episode"), "시청자수", ["웨이브"])
+
+    # [신규] Netflix Base
+    base_netflix_series = _series_ip_metric(_base_slice_for_metric(base_raw, f, "N_W순위", "week"), "N_W순위", mode="min")
+    base_netflix_best = float(base_netflix_series.mean()) if not base_netflix_series.empty else None
+
+    base_buzz = mean_of_ip_sums(_base_slice_for_metric(base_raw, f, "언급량", "week"), "언급량")
+    base_view = mean_of_ip_sums(_base_slice_for_metric(base_raw, f, "조회수", "week"), "조회수")
+    base_topic_min_series = _series_ip_metric(_base_slice_for_metric(base_raw, f, "F_Total", "week"), "F_Total", mode="min")
+    base_topic_min = float(base_topic_min_series.mean()) if not base_topic_min_series.empty else None
+    base_topic_avg = _mean_like_rating(_base_slice_for_metric(base_raw, f, "F_score", "week"), "F_score")
+    # --- Ranking ---
+    def _rank_within_program(base_df, metric_name, ip_name, value, mode="mean", media=None, low_is_good=False):
+        s = _series_ip_metric(base_df, metric_name, mode=mode, media=media)
+        if s.empty or value is None or pd.isna(value): return (None, 0)
+        s = s.dropna()
+        if ip_name not in s.index: return (None, int(s.shape[0]))
+        ranks = s.rank(method="min", ascending=low_is_good)
+        return (int(ranks.loc[ip_name]), int(s.shape[0]))
+
+    rk_T     = _rank_within_program(_base_slice_for_metric(base_raw, f, "T시청률", "episode"), "T시청률", ip_selected, val_T,   mode="mean",        media=None)
+    rk_H     = _rank_within_program(_base_slice_for_metric(base_raw, f, "H시청률", "episode"), "H시청률", ip_selected, val_H,   mode="mean",        media=None)
+    rk_live  = _rank_within_program(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ip_selected, val_live,  mode="ep_sum_mean", media=["TVING LIVE"])
+    rk_quick = _rank_within_program(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ip_selected, val_quick, mode="ep_sum_mean", media=["TVING QUICK"])
+    rk_vod   = _rank_within_program(_base_slice_for_metric(base_raw, f, "시청인구", "episode"), "시청인구", ip_selected, val_vod,   mode="ep_sum_mean", media=["TVING VOD"])
+
+    # [신규] Wavve Rank
+    rk_wavve = _rank_within_program(_base_slice_for_metric(base_raw, f, "시청자수", "episode"), "시청자수", ip_selected, val_wavve, mode="ep_sum_mean", media=["웨이브"])
+
+    # [신규] Netflix Rank
+    rk_netflix = _rank_within_program(_base_slice_for_metric(base_raw, f, "N_W순위", "week"), "N_W순위", ip_selected, val_netflix_best, mode="min", media=None, low_is_good=True)
+    rk_buzz  = _rank_within_program(_base_slice_for_metric(base_raw, f, "언급량", "week"), "언급량",   ip_selected, val_buzz,  mode="sum",        media=None)
+    rk_view  = _rank_within_program(_base_slice_for_metric(base_raw, f, "조회수", "week"), "조회수",   ip_selected, val_view,  mode="sum",        media=None)
+    rk_fmin  = _rank_within_program(_base_slice_for_metric(base_raw, f, "F_Total", "week"), "F_Total",  ip_selected, val_topic_min, mode="min",   media=None, low_is_good=True)
+    rk_fscr  = _rank_within_program(_base_slice_for_metric(base_raw, f, "F_score", "week"), "F_score",  ip_selected, val_topic_avg, mode="mean",  media=None, low_is_good=False)
+
+    # --- KPI Render Helpers ---
+    def _pct_color(val, base_val):
+        if val is None or pd.isna(val) or base_val in (None, 0) or pd.isna(base_val): return "#888"
+        pct = (val / base_val) * 100
+        return "#d93636" if pct > 100 else ("#2a61cc" if pct < 100 else "#444")
+
+    def _cutoff_label_for_metric(f: pd.DataFrame, metric_name: str, cutoff_kind: str = "episode", media: List[str] | None = None) -> str | None:
+        """선택 IP(f) 기준으로 컷오프 라벨 생성
+        - week   : ~W+N
+        - episode: ~N화
+        """
+        if f is None or f.empty:
+            return None
+
+        if metric_name == "조회수":
+            sub = _get_view_data(f)
+        else:
+            sub = f[f["metric"] == metric_name].copy()
+
+        if media is not None and "매체" in sub.columns:
+            sub = sub[sub["매체"].isin(media)]
+
+        if sub.empty:
+            return None
+
+        if cutoff_kind == "week":
+            if "주차_num" in sub.columns and sub["주차_num"].notna().any():
+                cut_week = sub["주차_num"].max()
+                if pd.notna(cut_week):
+                    return f"~W+{int(cut_week)}"
+            # fallback -> episode
+            if "회차_num" in sub.columns and sub["회차_num"].notna().any():
+                cut_ep = sub["회차_num"].max()
+                if pd.notna(cut_ep):
+                    return f"~{int(cut_ep)}화"
+            return None
+
+        # episode
+        if "회차_num" in sub.columns and sub["회차_num"].notna().any():
+            cut_ep = sub["회차_num"].max()
+            if pd.notna(cut_ep):
+                return f"~{int(cut_ep)}화"
+        return None
+
+    def sublines_html(prog_label: str, rank_tuple: tuple, val, base_val, cutoff_label: str | None = None):
+        rnk, total = rank_tuple if rank_tuple else (None, 0)
+
+        if rnk is not None and total > 0:
+            prefix = "👑 " if rnk == 1 else ""
+            cutoff_txt = f"/{cutoff_label}" if cutoff_label else ""
+            rank_label = f"{prefix}{rnk}위<span style='font-size:13px;font-weight:400;color:#9ca3af;margin-left:2px'>(총{total}개{cutoff_txt})</span>"
+        else:
+            rank_label = "–위"
+
+        pct_txt = "–"; col = "#888"
+        try:
+            if (val is not None) and (base_val not in (None, 0)) and (not (pd.isna(val) or pd.isna(base_val))):
+                pct = (float(val) / float(base_val)) * 100.0
+                pct_txt = f"{pct:.0f}%"; col = _pct_color(val, base_val)
+        except Exception: pass
+
+        return (
+            "<div class='kpi-subwrap'>"
+            "<span class='kpi-sublabel'>그룹 內</span> "
+            f"<span class='kpi-substrong'>{rank_label}</span><br/>"
+            "<span class='kpi-sublabel'>그룹 평균比</span> "
+            f"<span class='kpi-subpct' style='color:{col};'>{pct_txt}</span>"
+            "</div>"
+        )
+
+    def sublines_dummy():
+        return (
+         "<div class='kpi-subwrap' style='visibility:hidden;'>"
+         "<span class='kpi-sublabel'>_</span> <span class='kpi-substrong'>_</span><br/>"
+         "<span class='kpi-sublabel'>_</span> <span class='kpi-subpct'>_</span>"
+          "</div>"
+        )
+
+    def kpi_with_rank(col, title, value, base_val, rank_tuple, prog_label, intlike=False, digits=3, value_suffix="", cutoff_label: str | None = None):
+        with col:
+            main_val = fmt(value, digits=digits, intlike=intlike)
+            st.markdown(
+                f"<div class='kpi-card'><div class='kpi-title'>{title}</div>"
+                f"<div class='kpi-value'>{main_val}{value_suffix}</div>"
+                f"{sublines_html(prog_label, rank_tuple, value, base_val, cutoff_label=cutoff_label)}</div>",
                 unsafe_allow_html=True
             )
 
